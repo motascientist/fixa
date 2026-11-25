@@ -2,9 +2,9 @@
 
 [![Download the Android APK](https://img.shields.io/badge/Download-Android%20APK-2E5E4E?style=for-the-badge&logo=android&logoColor=white)](https://github.com/motascientist/fixa/releases/latest/download/fixa.apk)
 
-Spaced repetition flashcards on a simple screen. You write the cards; the app decides when each one comes back —
-right before you would forget it. It runs in the browser, installs on a phone as an app, and ships as an Android APK.
-**Nothing leaves the device**: no server, no account, no tracking. Available in **English** and **Portuguese**.
+Spaced repetition flashcards for Android, on a simple screen. You write the cards; the app decides when each one
+comes back — right before you would forget it. **Nothing leaves the phone**: no server, no account, no tracking.
+Available in **English** and **Portuguese**.
 
 | Pick a language | Home | Question | Answer | Rated | Done |
 |---|---|---|---|---|---|
@@ -42,17 +42,7 @@ The APK has no internet permission — your cards stay on the phone. The only pe
 | Scheduler | [`fsrs.js`](fsrs.js): FSRS-6 rewritten from the published formulas, ~100 lines |
 | Languages | [`i18n.js`](i18n.js): every interface string in English and Portuguese, with plural forms |
 | Data | Card text in `localStorage`; images and audio in IndexedDB ([`media.js`](media.js)), photos shrunk to 1280 px |
-| Installable | PWA (manifest + service worker): opens offline after the first visit |
-| Android | [`android/`](android/): one Activity with a WebView that carries the web app inside the APK. **No internet permission** |
-
-## Run locally
-
-```bash
-python -m http.server 8000   # then open http://localhost:8000
-```
-
-To install it on a phone straight from the website, it has to be served over HTTPS. To build the APK yourself, see
-[`android/README.md`](android/README.md).
+| Android | [`android/`](android/): one Activity with a WebView that carries the app inside the APK. **No internet permission**. To build it yourself, see [`android/README.md`](android/README.md) |
 
 ## Tests
 
