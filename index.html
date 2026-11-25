@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fixa</title>
+<meta name="description" content="Cartões de revisão espaçada com o algoritmo FSRS-6, numa tela simples.">
+<meta name="theme-color" content="#F4F1EA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15171A" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Fixa">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app">
+
+  <!-- INÍCIO -->
+  <section id="v-home" class="view">
+    <header class="top">
+      <h1 class="logo"><span class="logo-mark" aria-hidden="true"></span>Fixa</h1>
+      <span id="streak" class="chip" hidden></span>
+    </header>
+
+    <div class="hero card">
+      <p class="eyebrow">Para hoje</p>
+      <p class="big"><span id="today-n">0</span> <span class="unit" id="today-unit">cartões</span></p>
+      <p class="muted" id="today-sub"></p>
+      <button class="btn primary wide" id="start-all">Começar</button>
+    </div>
+
+    <div class="section-title" id="sec-decks"><h2>Baralhos</h2><button class="link" id="new-deck">+ Novo baralho</button></div>
+    <ul id="deck-list" class="list"></ul>
+
+    <div class="section-title" id="sec-forecast"><h2>Próximos 7 dias</h2></div>
+    <div id="forecast" class="forecast card"></div>
+  </section>
+
+  <!-- ESTUDO -->
+  <section id="v-study" class="view" hidden>
+    <div class="study-top">
+      <button class="link" id="quit">← Sair</button>
+      <div class="bar" aria-hidden="true"><i id="prog"></i></div>
+      <span id="left" class="muted small"></span>
+    </div>
+
+    <article class="flash card" id="flash">
+      <div class="flash-top"><p class="eyebrow" id="flash-deck"></p><span class="chip novo" id="flash-novo" hidden>novo</span><span class="grow"></span><button class="link small" id="flash-edit" type="button">Editar</button></div>
+      <div class="face-wrap">
+        <div class="face front" id="front"></div>
+        <button class="icon-btn speak" data-face="front" title="Ouvir" aria-label="Ouvir a frente" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <img class="face-img" id="front-img" alt="" hidden>
+      <div id="answer" hidden>
+        <hr>
+        <div class="face-wrap">
+          <div class="face back" id="back"></div>
+          <button class="icon-btn speak" data-face="back" title="Ouvir" aria-label="Ouvir o verso" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <img class="face-img" id="back-img" alt="" hidden>
+      </div>
+    </article>
+
+    <div class="actions" id="actions">
+      <button class="btn primary wide" id="reveal">Mostrar resposta</button>
+      <div class="grade" id="grade" hidden>
+        <button class="btn again" data-r="1"><b>Esqueci</b><small id="i1"></small></button>
+        <button class="btn good" data-r="3"><b>Lembrei</b><small id="i3"></small></button>
+        <button class="btn easy" data-r="4"><b>Fácil</b><small id="i4"></small></button>
+      </div>
+      <p class="hint muted small" id="keys">Teclado: espaço mostra · 1 esqueci · 2 lembrei · 3 fácil · E edita</p>
+      <button class="link small" id="undo" hidden>Desfazer a última</button>
+    </div>
+
+    <div id="done" class="card done" hidden>
+      <span class="done-mark" aria-hidden="true"></span>
+      <h2>Pronto por hoje.</h2>
+      <p class="muted" id="done-sub"></p>
+      <button class="btn primary" id="done-home">Voltar ao início</button>
+    </div>
+  </section>
+
+  <!-- ADICIONAR -->
+  <section id="v-add" class="view" hidden>
+    <header class="top"><h1>Adicionar</h1></header>
+    <div class="card empty-card" id="add-sem-baralho" hidden>
+      <p>Para adicionar cartões, crie primeiro um baralho.</p>
+      <button class="btn primary" type="button" id="add-criar-baralho">Criar baralho</button>
+    </div>
+    <form id="add-form" class="card form" autocomplete="off">
+      <label>Baralho <select id="add-deck"></select></label>
+      <div class="face-campo">
+        <label for="add-front"><span>Frente <small class="muted">— a pergunta</small></span></label>
+        <textarea id="add-front" rows="2"></textarea>
+        <div class="midia" data-face="front"></div>
+      </div>
+      <div class="face-campo">
+        <label for="add-back"><span>Verso <small class="muted">— a resposta</small></span></label>
+        <textarea id="add-back" rows="2"></textarea>
+        <div class="midia" data-face="back"></div>
+      </div>
+      <button class="btn primary wide" type="submit">Salvar e fazer o próximo</button>
+      <p class="hint muted small">Ctrl+Enter também salva</p>
+    </form>
+
+    <details class="card bulk" id="bulk">
+      <summary>Colar vários de uma vez</summary>
+      <p class="muted small">Um cartão por linha, frente e verso separados por <code>|</code>. Também aceita arquivo de texto
+        com frente e verso separados por tabulação.</p>
+      <textarea id="bulk-text" rows="6" placeholder="frente | verso"></textarea>
+      <div class="row-btns">
+        <label class="btn ghost file">Abrir arquivo…<input type="file" id="bulk-file" accept=".txt,.csv,.tsv,text/plain" hidden></label>
+        <button class="btn primary" id="bulk-add" type="button">Adicionar todos</button>
+      </div>
+    </details>
+  </section>
+
+  <!-- CARTÕES -->
+  <section id="v-cards" class="view" hidden>
+    <header class="top"><h1>Cartões</h1></header>
+    <div class="filters">
+      <select id="cards-deck"></select>
+      <input type="search" id="cards-q" placeholder="Buscar…">
+    </div>
+    <p class="muted small" id="cards-info"></p>
+    <ul id="card-list" class="list"></ul>
+  </section>
+
+  <!-- AJUSTES -->
+  <section id="v-settings" class="view" hidden>
+    <header class="top"><h1>Ajustes</h1></header>
+
+    <div class="card form">
+      <h2>Estudo</h2>
+      <label>Cartões novos por dia, em cada baralho <input type="number" id="set-new" min="0" max="200" inputmode="numeric"></label>
+      <label>Quanto você quer lembrar: <b id="ret-val"></b>
+        <input type="range" id="set-ret" min="0.80" max="0.97" step="0.01"></label>
+      <p class="muted small" id="ret-help"></p>
+    </div>
+
+    <div class="card form" id="card-instalar">
+      <h2>Instalar no celular</h2>
+      <p class="small"><b>iPhone:</b> abra no Safari → botão Compartilhar → <em>Adicionar à Tela de Início</em>.<br>
+        <b>Android:</b> abra no Chrome → menu ⋮ → <em>Instalar app</em>.</p>
+      <button class="btn primary" id="install-btn" hidden>Instalar agora</button>
+      <p class="muted small">Depois de instalado, funciona sem internet. Os cartões ficam só neste aparelho; use o backup para levar a outro.</p>
+    </div>
+
+    <div class="card form">
+      <h2>Backup</h2>
+      <div class="row-btns">
+        <button class="btn ghost" id="export">Baixar backup</button>
+        <label class="btn ghost file">Restaurar backup…<input type="file" id="import" accept=".json,application/json" hidden></label>
+      </div>
+      <p class="muted small" id="backup-info"></p>
+      <p class="muted small" id="import-msg"></p>
+    </div>
+
+    <div class="card form prose">
+      <h2>Sobre o método</h2>
+      <p>O Fixa agenda cada cartão com o <b>FSRS-6</b>, um algoritmo aberto de repetição espaçada, com os parâmetros padrão dele.
+        Para cada cartão ele guarda duas coisas: a <b>estabilidade</b> (quantos dias até sua chance de lembrar cair para 90%) e
+        a <b>dificuldade</b>. Cada resposta atualiza as duas, e o cartão volta exatamente quando você está prestes a esquecer.</p>
+      <p>Três botões bastam: quem erra volta em um minuto, na mesma sessão. O dia vira às 4h da manhã, então estudar de
+        madrugada ainda conta como hoje.</p>
+    </div>
+
+    <div class="card form">
+      <h2>Zerar</h2>
+      <button class="btn danger" id="wipe">Apagar tudo (baralhos e cartões)</button>
+    </div>
+    <p class="muted small center">Fixa · dados só neste aparelho</p>
+  </section>
+
+</main>
+
+<nav class="tabbar" id="tabbar">
+  <a href="#home" data-tab="home"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>Início</a>
+  <a href="#add" data-tab="add"><svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>Adicionar</a>
+  <a href="#cards" data-tab="cards"><svg viewBox="0 0 24 24"><path d="M5 6h14v2H5zm0 5h14v2H5zm0 5h9v2H5z"/></svg>Cartões</a>
+  <a href="#settings" data-tab="settings"><svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm8 3.5l2-1.5-2-3.5-2.4.8a7 7 0 0 0-1.7-1L15.5 4h-4l-.5 2.8a7 7 0 0 0-1.7 1L7 7 5 10.5 7 12l-2 1.5L7 17l2.4-.8a7 7 0 0 0 1.7 1l.4 2.8h4l.5-2.8a7 7 0 0 0 1.7-1l2.3.8 2-3.5z"/></svg>Ajustes</a>
+</nav>
+
+<!-- Diálogo: baralho -->
+<dialog id="deck-dlg">
+  <form method="dialog" class="form" id="deck-form">
+    <h2 id="deck-title">Baralho</h2>
+    <label>Nome <input id="deck-name" required maxlength="60"></label>
+    <div class="row-btns">
+      <button class="btn danger" type="button" id="deck-del">Apagar baralho</button>
+      <span class="grow"></span>
+      <button class="btn ghost" value="cancel" formnovalidate>Cancelar</button>
+      <button class="btn primary" value="ok">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Diálogo: cartão -->
+<dialog id="card-dlg">
+  <form method="dialog" class="form" id="card-form">
+    <h2>Editar cartão</h2>
+    <label>Baralho <select id="card-deck"></select></label>
+    <div class="face-campo">
+      <label for="card-front">Frente</label>
+      <textarea id="card-front" rows="2"></textarea>
+      <div class="midia" data-face="front"></div>
+    </div>
+    <div class="face-campo">
+      <label for="card-back">Verso</label>
+      <textarea id="card-back" rows="2"></textarea>
+      <div class="midia" data-face="back"></div>
+    </div>
+    <p class="muted small" id="card-meta"></p>
+    <div class="row-btns">
+      <button class="btn danger" type="button" id="card-del">Apagar</button>
+      <button class="btn ghost" type="button" id="card-reset">Recomeçar</button>
+      <span class="grow"></span>
+      <button class="btn ghost" value="cancel" formnovalidate>Cancelar</button>
+      <button class="btn primary" value="ok">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="fsrs.js"></script>
+<script src="midia.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

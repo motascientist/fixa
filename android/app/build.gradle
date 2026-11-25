@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+}
+
+// O APK não tem código de app próprio: ele empacota o site (a pasta de cima) e o abre de dentro do arquivo.
+def site = rootProject.file('..')
+// A chave de assinatura nunca entra no repositório: vem de variáveis de ambiente (ver LEIA-ME.md).
+def chave = System.getenv('FIXA_KEYSTORE')
+
+android {
+    namespace 'app.fixa'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.fixa'
+        minSdk 27
+        targetSdk 34
+        versionCode 4
+        versionName '0.1.0'
+    }
+
+    signingConfigs {
+        if (chave) {
+            release {
+                storeFile file(chave)
+                storePassword System.getenv('FIXA_KEYSTORE_SENHA')
+                keyAlias 'fixa'
+                keyPassword System.getenv('FIXA_KEYSTORE_SENHA')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (chave) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main { assets.srcDirs = ["$buildDir/site"] }
+    }
+
+    lint { checkReleaseBuilds false }
+}
+
+tasks.register('copiarSite', Copy) {
+    from(site) {
+        include 'index.html', 'style.css', 'app.js', 'fsrs.js', 'midia.js', 'manifest.webmanifest', 'icons/**'
+    }
+    into "$buildDir/site"
+}
+preBuild.dependsOn copiarSite
