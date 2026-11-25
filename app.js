@@ -1,90 +1,99 @@
 'use strict';
-/* Fixa — revisão espaçada com o algoritmo FSRS-6. Dados só no aparelho (localStorage + IndexedDB). */
+/* Fixa — spaced repetition with the FSRS-6 algorithm. Data stays on the device (localStorage + IndexedDB). */
 
-const KEY = 'fixa.v1';
-const DEFAULTS = { newPerDay: 10, maxReviews: 200, retention: 0.9, lastDeck: null };
-const ROLL = 4 * 3600e3;   // o dia vira às 4h: estudar à 1h da manhã ainda conta como "hoje"
+const STORAGE_KEY = 'fixa.v1';
+const DEFAULTS = { newPerDay: 10, retention: 0.9, lastDeck: null, lang: 'auto' };
+const DAY_ROLLOVER = 4 * 3600e3; // the day changes at 4 a.m.: studying at 1 a.m. still counts as "today"
 const DAY = 864e5;
-const SEG_POR_CARTAO = 8;  // estimativa para "uns N min"
+const SECONDS_PER_CARD = 8;      // estimate behind "about N min"
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 
-// Dentro do APK existe window.FixaAndroid (ver android/). No navegador, não.
-const NO_APK = !!window.FixaAndroid;
+// Inside the APK there is window.FixaAndroid (see android/). In a browser there isn't.
+const IN_APK = !!window.FixaAndroid;
 
-/* ---------- Dados ---------- */
+/* ---------- Data ---------- */
 
 let db = load();
 
 function fresh() {
-  // O app nasce vazio: baralhos e cartões são todos do dono.
+  // The app starts empty: every deck and card belongs to the user.
   return { decks: [], cards: [], days: {}, settings: { ...DEFAULTS } };
 }
+
+// Accepts data saved by older versions (and old backups) and brings it to the current shape.
+function normalize(d) {
+  d.settings = { ...DEFAULTS, ...d.settings };
+  d.days = d.days || {};
+  d.decks = (d.decks || []).map(({ id, name }) => ({ id, name }));
+  d.cards = d.cards || [];
+  for (const c of d.cards) {
+    if (c.midia && !c.media) c.media = c.midia; // field renamed in v0.2.0
+    delete c.midia;
+  }
+  return d;
+}
+
 function load() {
   let raw = null;
   try {
-    raw = localStorage.getItem(KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      d.settings = { ...DEFAULTS, ...d.settings };
-      d.days = d.days || {};
-      d.decks = d.decks || [];
-      d.cards = d.cards || [];
-      return d;
-    }
+    raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return normalize(JSON.parse(raw));
   } catch (e) {
-    // dado ilegível: guarda uma cópia antes de recomeçar, para não perder nada
-    try { if (raw) localStorage.setItem(KEY + '.ilegivel.' + Date.now(), raw); } catch (_) { /* sem espaço */ }
+    // unreadable data: keep a copy before starting over, so nothing is lost
+    try { if (raw) localStorage.setItem(STORAGE_KEY + '.unreadable.' + Date.now(), raw); } catch (_) { /* no room */ }
   }
   return fresh();
 }
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(db)); }
-  catch (e) { toast('Não consegui salvar neste aparelho (sem espaço?).'); }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
+  catch (e) { toast(t('saveFailed')); }
 }
-let pediuPersistencia = false;
-function pedirPersistencia() {
-  if (pediuPersistencia) return;
-  pediuPersistencia = true;
+let persistenceRequested = false;
+function requestPersistence() {
+  if (persistenceRequested) return;
+  persistenceRequested = true;
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 }
 
 const deckById = id => db.decks.find(d => d.id === id);
 const cardById = id => db.cards.find(c => c.id === id);
 
-/* ---------- Tempo ---------- */
+/* ---------- Time ---------- */
 
-function dayIdx(ms = Date.now()) {
-  const d = new Date(ms - ROLL);
+function dayIndex(ms = Date.now()) {
+  const d = new Date(ms - DAY_ROLLOVER);
   return Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY);
 }
 function dayStart(idx) {
   const u = new Date(idx * DAY);
   return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), 4).getTime();
 }
-function fmtDias(d) {
-  if (d < 30) return plural(d, 'dia', 'dias');
-  if (d < 365) return plural(Math.round(d / 30), 'mês', 'meses');
+function formatDays(d) {
+  if (d < 30) return tn('days', d);
+  if (d < 365) return tn('months', Math.round(d / 30));
   const y = d / 365;
-  return y < 10 ? `${y.toFixed(1).replace('.', ',')} ${y < 2 ? 'ano' : 'anos'}` : `${Math.round(y)} anos`;
+  if (y >= 10) return tn('years', 2, { x: Math.round(y) });
+  const x = formatDecimal(y);
+  const singular = LANG === 'pt' ? y < 2 : x === formatDecimal(1);
+  return tn('years', singular ? 1 : 2, { x });
 }
-function quando(d) {
-  if (d <= 0) return 'ainda hoje';
-  if (d === 1) return 'amanhã';
-  return 'em ' + fmtDias(d);
+function whenText(daysAhead) {
+  if (daysAhead <= 0) return t('laterToday');
+  if (daysAhead === 1) return t('tomorrow');
+  return t('inDuration', { d: formatDays(daysAhead) });
 }
 
-/* ---------- Agendamento (FSRS-6) ---------- */
+/* ---------- Scheduling (FSRS-6) ---------- */
 
-// O que acontece com o cartão se a nota for r — sem gravar nada.
+// What would happen to the card if it got rating r — without saving anything.
 function plan(card, r, now = Date.now()) {
-  const today = dayIdx(now);
-  const dt = card.last ? Math.max(0, today - dayIdx(card.last)) : 0;
-  const mem = FSRS.step(card.s ? { s: card.s, d: card.d } : null, r, dt);
+  const today = dayIndex(now);
+  const elapsed = card.last ? Math.max(0, today - dayIndex(card.last)) : 0;
+  const mem = FSRS.step(card.s ? { s: card.s, d: card.d } : null, r, elapsed);
   if (r === 1) return { s: mem.s, d: mem.d, due: now + 60e3, ivl: 0 };
   const ivl = Math.min(FSRS.S_MAX, Math.max(1, Math.round(FSRS.nextInterval(mem.s, db.settings.retention))));
   return { s: mem.s, d: mem.d, due: dayStart(today + ivl), ivl };
@@ -92,7 +101,7 @@ function plan(card, r, now = Date.now()) {
 
 function answer(card, r) {
   const now = Date.now();
-  const today = dayIdx(now);
+  const today = dayIndex(now);
   const p = plan(card, r, now);
   if (card.state === 'new') card.introduced = today;
   if (r === 1 && card.state === 'review') card.lapses = (card.lapses || 0) + 1;
@@ -102,48 +111,48 @@ function answer(card, r) {
   save();
 }
 
-// Quantos cartões novos o baralho ainda pode mostrar hoje. O limite é por baralho:
-// estudar Inglês não gasta a cota do Japonês.
-function novosPermitidos(deckId, today = dayIdx()) {
-  const vistos = db.cards.filter(c => c.deckId === deckId && c.introduced === today).length;
-  return Math.max(0, db.settings.newPerDay - vistos);
+// How many new cards a deck can still show today. The limit is per deck:
+// studying one deck does not use up another deck's new cards.
+function newAllowed(deckId, today = dayIndex()) {
+  const seen = db.cards.filter(c => c.deckId === deckId && c.introduced === today).length;
+  return Math.max(0, db.settings.newPerDay - seen);
 }
 
 function counts(deckId = null) {
   const now = Date.now();
-  const today = dayIdx(now);
-  const out = { due: 0, news: 0, totalNovos: 0, total: 0 };
+  const today = dayIndex(now);
+  const out = { due: 0, news: 0, totalNew: 0, total: 0 };
   for (const id of deckId ? [deckId] : db.decks.map(d => d.id)) {
     const pool = db.cards.filter(c => c.deckId === id);
-    const novos = pool.filter(c => c.state === 'new').length;
+    const fresh = pool.filter(c => c.state === 'new').length;
     out.due += pool.filter(c => c.state !== 'new' && c.due <= now).length;
-    out.news += Math.min(novos, novosPermitidos(id, today));
-    out.totalNovos += novos;
+    out.news += Math.min(fresh, newAllowed(id, today));
+    out.totalNew += fresh;
     out.total += pool.length;
   }
   return out;
 }
 
-function proximoTexto() {
+function nextUpText() {
   const now = Date.now();
-  const futuros = db.cards.filter(c => c.state !== 'new' && c.due > now).sort((a, b) => a.due - b.due);
-  const { totalNovos, news } = counts();
-  if (totalNovos > 0 && news === 0) return 'Você já viu os novos de hoje. Amanhã tem mais.';
-  if (!futuros.length) return 'Adicione cartões para começar.';
-  const d = dayIdx(futuros[0].due) - dayIdx(now);
-  const n = futuros.filter(c => dayIdx(c.due) === dayIdx(futuros[0].due)).length;
-  return `Próximos: ${plural(n, 'cartão', 'cartões')} ${quando(d)}.`;
+  const upcoming = db.cards.filter(c => c.state !== 'new' && c.due > now).sort((a, b) => a.due - b.due);
+  const { totalNew, news } = counts();
+  if (totalNew > 0 && news === 0) return t('seenNewToday');
+  if (!upcoming.length) return t('addToStart');
+  const firstDay = dayIndex(upcoming[0].due);
+  const n = upcoming.filter(c => dayIndex(c.due) === firstDay).length;
+  return t('nextUp', { cards: tn('cards', n), when: whenText(firstDay - dayIndex(now)) });
 }
 
-function sequencia() {
-  let t = dayIdx();
-  if (!db.days[t]) t--;
+function streakDays() {
+  let d = dayIndex();
+  if (!db.days[d]) d--;
   let n = 0;
-  while (db.days[t]) { n++; t--; }
+  while (db.days[d]) { n++; d--; }
   return n;
 }
 
-/* ---------- Navegação ---------- */
+/* ---------- Navigation ---------- */
 
 const VIEWS = ['home', 'study', 'add', 'cards', 'settings'];
 function go(v) {
@@ -153,103 +162,102 @@ function go(v) {
 function route() {
   let v = location.hash.slice(1) || 'home';
   if (!VIEWS.includes(v)) v = 'home';
-  if (v === 'study' && !sess) v = 'home';
+  if (v === 'study' && !session) v = 'home';
   VIEWS.forEach(x => { $('#v-' + x).hidden = x !== v; });
   $$('.tabbar a').forEach(a => a.classList.toggle('on', a.dataset.tab === v));
   document.body.classList.toggle('studying', v === 'study');
   if (v !== 'study') {
-    sess = null;
-    soltarEstudo();
+    session = null;
+    releaseStudyMedia();
   }
   ({ home: renderHome, add: renderAdd, cards: renderCards, settings: renderSettings, study: () => {} })[v]();
   window.scrollTo(0, 0);
 }
 addEventListener('hashchange', route);
 
-let toastT;
+let toastTimer;
 function toast(msg) {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(toastT);
-  toastT = setTimeout(() => t.classList.remove('show'), 2600);
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
 }
 
-// Botão perigoso: o primeiro toque arma, o segundo confirma.
-function confirmar(btn, rotulo, fn) {
+// Dangerous button: the first tap arms it, the second confirms.
+function confirmTap(btn, label, fn) {
   if (btn.dataset.armed) {
-    clearTimeout(btn._t);
-    btn.textContent = btn.dataset.orig;
+    clearTimeout(btn._timer);
+    btn.textContent = btn.dataset.label;
     delete btn.dataset.armed;
     btn.classList.remove('armed');
     fn();
     return;
   }
-  btn.dataset.orig = btn.textContent;
+  btn.dataset.label = btn.textContent;
   btn.dataset.armed = '1';
-  btn.textContent = rotulo;
+  btn.textContent = label;
   btn.classList.add('armed');
-  btn._t = setTimeout(() => {
-    btn.textContent = btn.dataset.orig;
+  btn._timer = setTimeout(() => {
+    btn.textContent = btn.dataset.label;
     delete btn.dataset.armed;
     btn.classList.remove('armed');
   }, 4000);
 }
 
-/* ---------- Início ---------- */
+/* ---------- Home ---------- */
 
 function renderHome() {
   const { due, news } = counts();
   const n = due + news;
   $('#today-n').textContent = n;
-  $('#today-unit').textContent = n === 1 ? 'cartão' : 'cartões';
+  $('#today-unit').textContent = tn('cardUnit', n);
   const btn = $('#start-all');
-  // Sem cartões não há número nem gráfico para mostrar: a tela fica só com o próximo passo.
-  $('.hero').classList.toggle('vazio', !db.cards.length);
+  // With no cards there is no number or chart to show: the screen only offers the next step.
+  $('.hero').classList.toggle('empty', !db.cards.length);
   $('#sec-decks').hidden = $('#deck-list').hidden = !db.decks.length;
   $('#sec-forecast').hidden = $('#forecast').hidden = !db.cards.some(c => c.state !== 'new');
   if (!db.decks.length) {
-    $('#today-sub').textContent = 'Comece criando um baralho.';
-    btn.textContent = 'Criar baralho';
+    $('#today-sub').textContent = t('startByCreatingDeck');
+    btn.textContent = t('createDeck');
     btn.disabled = false;
-    btn.onclick = () => abrirBaralho(null);
+    btn.onclick = () => openDeckDialog(null);
   } else if (!db.cards.length) {
-    $('#today-sub').textContent = 'Ainda não há cartões. Comece adicionando alguns.';
-    btn.textContent = 'Adicionar cartões';
+    $('#today-sub').textContent = t('noCardsYet');
+    btn.textContent = t('addCards');
     btn.disabled = false;
     btn.onclick = () => go('add');
   } else if (!n) {
-    $('#today-sub').textContent = 'Tudo em dia. ' + proximoTexto();
-    btn.textContent = 'Tudo em dia';
+    $('#today-sub').textContent = t('allCaughtUp') + '. ' + nextUpText();
+    btn.textContent = t('allCaughtUp');
     btn.disabled = true;
     btn.onclick = null;
   } else {
-    const min = Math.max(1, Math.round((n * SEG_POR_CARTAO) / 60));
-    $('#today-sub').textContent = [due && `${due} para revisar`, news && plural(news, 'novo', 'novos'), `uns ${min} min`]
+    const min = Math.max(1, Math.round((n * SECONDS_PER_CARD) / 60));
+    $('#today-sub').textContent = [due && t('toReview', { n: due }), news && tn('newCards', news), t('aboutMinutes', { n: min })]
       .filter(Boolean).join(' · ');
-    btn.textContent = 'Começar';
+    btn.textContent = t('start');
     btn.disabled = false;
-    btn.onclick = () => start(null);
+    btn.onclick = () => startSession(null);
   }
 
-  const s = sequencia();
+  const s = streakDays();
   const chip = $('#streak');
   chip.hidden = !s;
-  chip.textContent = `${plural(s, 'dia seguido', 'dias seguidos')}`;
+  chip.textContent = tn('streak', s);
 
-  const ul = $('#deck-list');
-  ul.innerHTML = !db.decks.length ? '<li class="empty">Nenhum baralho ainda.</li>' : db.decks.map(d => {
+  $('#deck-list').innerHTML = db.decks.map(d => {
     const c = counts(d.id);
     return `<li class="deck">
       <button class="row" data-deck="${d.id}">
-        <span><b>${esc(d.name)}</b><small>${plural(c.total, 'cartão', 'cartões')}</small></span>
+        <span><b>${esc(d.name)}</b><small>${tn('cards', c.total)}</small></span>
         <span class="pills">${
-          !c.total ? '<span class="pill zero">vazio</span>'
-          : !c.due && !c.news ? '<span class="pill zero">em dia</span>'
-          : (c.due ? `<span class="pill due">${c.due} revisar</span>` : '') + (c.news ? `<span class="pill new">${plural(c.news, 'novo', 'novos')}</span>` : '')
+          !c.total ? `<span class="pill zero">${t('pillEmpty')}</span>`
+          : !c.due && !c.news ? `<span class="pill zero">${t('pillDone')}</span>`
+          : (c.due ? `<span class="pill due">${t('pillDue', { n: c.due })}</span>` : '') + (c.news ? `<span class="pill new">${tn('newCards', c.news)}</span>` : '')
         }</span>
       </button>
-      <button class="icon-btn" data-edit-deck="${d.id}" aria-label="Ajustar baralho ${esc(d.name)}">
+      <button class="icon-btn" data-edit-deck="${d.id}" aria-label="${esc(t('editDeck', { name: d.name }))}">
         <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
       </button></li>`;
   }).join('');
@@ -258,121 +266,122 @@ function renderHome() {
 }
 
 function renderForecast() {
-  const today = dayIdx();
-  const fim = dayStart(today + 1);
-  const dias = Array.from({ length: 7 }, (_, i) => {
-    const n = db.cards.filter(c => c.state !== 'new' && (i === 0 ? c.due < fim : dayIdx(c.due) === today + i)).length;
-    const rot = i === 0 ? 'hoje' : i === 1 ? 'amanhã' : new Date(dayStart(today + i)).toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
-    return { n, rot };
+  const today = dayIndex();
+  const endOfToday = dayStart(today + 1);
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const n = db.cards.filter(c => c.state !== 'new' && (i === 0 ? c.due < endOfToday : dayIndex(c.due) === today + i)).length;
+    const label = i === 0 ? t('today') : i === 1 ? t('tomorrow')
+      : new Date(dayStart(today + i)).toLocaleDateString(locale(), { weekday: 'short' }).replace('.', '');
+    return { n, label };
   });
-  const max = Math.max(1, ...dias.map(d => d.n));
-  $('#forecast').innerHTML = dias.map((d, i) =>
-    `<div class="fc ${i === 0 ? 'today' : ''}"><span class="n">${d.n}</span><span class="b" style="height:${Math.round((d.n / max) * 64)}px"></span><span>${d.rot}</span></div>`
+  const max = Math.max(1, ...days.map(d => d.n));
+  $('#forecast').innerHTML = days.map((d, i) =>
+    `<div class="fc ${i === 0 ? 'today' : ''}"><span class="n">${d.n}</span><span class="b" style="height:${Math.round((d.n / max) * 64)}px"></span><span>${d.label}</span></div>`
   ).join('');
 }
 
 $('#deck-list').addEventListener('click', e => {
-  const ed = e.target.closest('[data-edit-deck]');
-  if (ed) return abrirBaralho(ed.dataset.editDeck);
+  const edit = e.target.closest('[data-edit-deck]');
+  if (edit) return openDeckDialog(edit.dataset.editDeck);
   const row = e.target.closest('[data-deck]');
-  if (row) start(row.dataset.deck);
+  if (row) startSession(row.dataset.deck);
 });
-$('#new-deck').addEventListener('click', () => abrirBaralho(null));
-$('#add-criar-baralho').addEventListener('click', () => abrirBaralho(null));
+$('#new-deck').addEventListener('click', () => openDeckDialog(null));
+$('#add-create-deck').addEventListener('click', () => openDeckDialog(null));
 
-/* ---------- Baralho (diálogo) ---------- */
+/* ---------- Deck dialog ---------- */
 
-let deckEditando = null;
-function abrirBaralho(id) {
-  deckEditando = id;
+let editingDeck = null;
+function openDeckDialog(id) {
+  editingDeck = id;
   const d = id ? deckById(id) : { name: '' };
-  $('#deck-title').textContent = id ? 'Ajustar baralho' : 'Novo baralho';
+  $('#deck-title').textContent = id ? t('editDeckTitle') : t('newDeck');
   $('#deck-name').value = d.name;
-  $('#deck-del').hidden = !id;
-  $('#deck-dlg').showModal();
+  $('#deck-delete').hidden = !id;
+  $('#deck-dialog').showModal();
   if (!id) $('#deck-name').focus();
 }
 $('#deck-form').addEventListener('submit', e => {
   if (e.submitter && e.submitter.value !== 'ok') return;
   const name = $('#deck-name').value.trim();
   if (!name) return;
-  if (deckEditando) deckById(deckEditando).name = name;
+  if (editingDeck) deckById(editingDeck).name = name;
   else {
-    const novo = { id: uid(), name };
-    db.decks.push(novo);
-    db.settings.lastDeck = novo.id; // o próximo cartão já cai nele
+    const deck = { id: uid(), name };
+    db.decks.push(deck);
+    db.settings.lastDeck = deck.id; // the next card goes straight into it
   }
   save();
-  route(); // redesenha a tela em que ele está (Início ou Adicionar)
+  route(); // redraw whichever screen is open (Home or Add)
 });
-$('#deck-del').addEventListener('click', e => {
-  const n = db.cards.filter(c => c.deckId === deckEditando).length;
-  confirmar(e.currentTarget, n ? `Apagar com ${plural(n, 'cartão', 'cartões')}?` : 'Confirmar', () => {
-    apagarMidiaDe(db.cards.filter(c => c.deckId === deckEditando));
-    db.cards = db.cards.filter(c => c.deckId !== deckEditando);
-    db.decks = db.decks.filter(d => d.id !== deckEditando);
-    if (db.settings.lastDeck === deckEditando) db.settings.lastDeck = null;
+$('#deck-delete').addEventListener('click', e => {
+  const n = db.cards.filter(c => c.deckId === editingDeck).length;
+  confirmTap(e.currentTarget, n ? t('deleteDeckWith', { cards: tn('cards', n) }) : t('confirm'), () => {
+    deleteMediaOf(db.cards.filter(c => c.deckId === editingDeck));
+    db.cards = db.cards.filter(c => c.deckId !== editingDeck);
+    db.decks = db.decks.filter(d => d.id !== editingDeck);
+    if (db.settings.lastDeck === editingDeck) db.settings.lastDeck = null;
     save();
-    $('#deck-dlg').close();
+    $('#deck-dialog').close();
     renderHome();
-    toast('Baralho apagado.');
+    toast(t('deckDeleted'));
   });
 });
 
-/* ---------- Estudo ---------- */
+/* ---------- Study ---------- */
 
-let sess = null;
+let session = null;
 
-function start(deckId) {
+function startSession(deckId) {
   const now = Date.now();
-  const today = dayIdx(now);
+  const today = dayIndex(now);
   const ids = deckId ? [deckId] : db.decks.map(d => d.id);
   const due = db.cards.filter(c => ids.includes(c.deckId) && c.state !== 'new' && c.due <= now).sort((a, b) => a.due - b.due);
-  const novos = ids.flatMap(id => db.cards.filter(c => c.deckId === id && c.state === 'new')
-    .sort((a, b) => a.created - b.created).slice(0, novosPermitidos(id, today)));
-  // mistura: três revisões, um novo
+  const fresh = ids.flatMap(id => db.cards.filter(c => c.deckId === id && c.state === 'new')
+    .sort((a, b) => a.created - b.created).slice(0, newAllowed(id, today)));
+  // mix: three reviews, one new card
   const queue = [];
   let i = 0, j = 0;
-  while (i < due.length || j < novos.length) {
+  while (i < due.length || j < fresh.length) {
     for (let k = 0; k < 3 && i < due.length; k++) queue.push(due[i++].id);
-    if (j < novos.length) queue.push(novos[j++].id);
+    if (j < fresh.length) queue.push(fresh[j++].id);
   }
-  if (!queue.length) return toast('Nada para revisar neste baralho agora.');
-  sess = { queue, learning: [], done: 0, cur: null, undo: null };
+  if (!queue.length) return toast(t('nothingToReview'));
+  session = { queue, learning: [], done: 0, current: null, undo: null };
   $('#undo').hidden = true;
   $('#done').hidden = true;
   $('#flash').hidden = false;
   $('#actions').hidden = false;
   go('study');
-  mostrar(escolher());
+  showCard(pickNext());
 }
 
-function escolher() {
+function pickNext() {
   const now = Date.now();
-  sess.learning = sess.learning.filter(id => cardById(id));
-  const errados = sess.learning.map(cardById).sort((a, b) => a.due - b.due);
-  if (errados.length && errados[0].due <= now) return errados[0];
-  while (sess.queue.length) {
-    const c = cardById(sess.queue[0]);
+  session.learning = session.learning.filter(id => cardById(id));
+  const missed = session.learning.map(cardById).sort((a, b) => a.due - b.due);
+  if (missed.length && missed[0].due <= now) return missed[0];
+  while (session.queue.length) {
+    const c = cardById(session.queue[0]);
     if (c) return c;
-    sess.queue.shift();
+    session.queue.shift();
   }
-  return errados[0] || null; // só sobrou o que errou: mostra já, sem fazer esperar
+  return missed[0] || null; // only missed cards left: show them now instead of making the user wait
 }
 
-// Mídia do cartão na tela: URLs temporárias que se soltam a cada cartão.
+// Card media on screen: temporary URLs, released at every card.
 const player = new Audio();
-let estudoMidia = { front: {}, back: {} };
-let vezDoCartao = 0;
+let studyMedia = { front: {}, back: {} };
+let showToken = 0;
 
-function soltarEstudo() {
-  FACES.forEach(f => TIPOS.forEach(k => { if (estudoMidia[f][k]) URL.revokeObjectURL(estudoMidia[f][k]); }));
-  estudoMidia = { front: {}, back: {} };
+function releaseStudyMedia() {
+  FACES.forEach(f => KINDS.forEach(k => { if (studyMedia[f][k]) URL.revokeObjectURL(studyMedia[f][k]); }));
+  studyMedia = { front: {}, back: {} };
   player.pause();
 }
 
-function tocar(face) {
-  const url = estudoMidia[face].audio;
+function play(face) {
+  const url = studyMedia[face].audio;
   if (!url) return false;
   player.src = url;
   player.currentTime = 0;
@@ -380,67 +389,67 @@ function tocar(face) {
   return true;
 }
 
-/* ---------- Animações ---------- */
-// Curtas de propósito (< 0,5 s): recompensa, não espera. Quem pede "reduzir movimento" no sistema não vê nenhuma.
-const SEM_MOVIMENTO = matchMedia('(prefers-reduced-motion: reduce)');
-let animando = false;   // enquanto o cartão gira ou sai, toque e tecla não contam
-let saida = null;       // animação de saída do cartão anterior (presa no fim até o próximo entrar)
+/* ---------- Animations ---------- */
+// Short on purpose (< 0.5 s): a reward, not a wait. Users who ask the system to reduce motion see none.
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
+let animating = false; // while the card flips or leaves, taps and keys are ignored
+let leaving = null;    // exit animation of the previous card (held at its end until the next card enters)
 
-function animar(el, quadros, opcoes) {
-  if (SEM_MOVIMENTO.matches || !el.animate) return { finished: Promise.resolve(), cancel() {} };
-  const a = el.animate(quadros, opcoes);
+function animate(el, frames, options) {
+  if (REDUCED_MOTION.matches || !el.animate) return { finished: Promise.resolve(), cancel() {} };
+  const a = el.animate(frames, options);
   a.finished.catch(() => {});
   return a;
 }
 
-const SAIDAS = {
-  1: [ // Esqueci: tremidinha e sai para o lado
+const EXITS = {
+  1: [ // Forgot: a little shake, then out to the side
     { transform: 'translateX(0)', opacity: 1 },
     { transform: 'translateX(-12px)', offset: 0.25 },
     { transform: 'translateX(10px)', offset: 0.5 },
     { transform: 'translateX(-60px)', opacity: 0 },
   ],
-  3: [ // Lembrei: sobe e some
+  3: [ // Remembered: rises and fades
     { transform: 'none', opacity: 1 },
     { transform: 'translateY(-36px) scale(.97)', opacity: 0 },
   ],
-  4: [ // Fácil: pulinho e voa
+  4: [ // Easy: a hop, then flies off
     { transform: 'none', opacity: 1 },
     { transform: 'translateY(-10px) scale(1.04)', opacity: 1, offset: 0.35 },
     { transform: 'translateY(-70px) scale(1.04)', opacity: 0 },
   ],
 };
 
-// O "+3 dias" que sobe do botão apertado.
-function flutuar(btn, texto, r) {
-  if (SEM_MOVIMENTO.matches) return;
+// The "+3 days" label that rises from the pressed button.
+function floatLabel(btn, text, r) {
+  if (REDUCED_MOTION.matches) return;
   const box = btn.getBoundingClientRect();
-  const s = document.createElement('span');
-  s.className = 'flutua r' + r;
-  s.textContent = texto;
-  s.style.left = box.left + box.width / 2 + 'px';
-  s.style.top = box.top - 6 + 'px';
-  document.body.appendChild(s);
-  s.animate([
+  const el = document.createElement('span');
+  el.className = 'float-label r' + r;
+  el.textContent = text;
+  el.style.left = box.left + box.width / 2 + 'px';
+  el.style.top = box.top - 6 + 'px';
+  document.body.appendChild(el);
+  el.animate([
     { transform: 'translate(-50%, 0) scale(.8)', opacity: 0 },
     { transform: 'translate(-50%, -28px) scale(1.1)', opacity: 1, offset: 0.3 },
     { transform: 'translate(-50%, -80px) scale(1)', opacity: 0 },
-  ], { duration: 900, easing: 'cubic-bezier(.2,.8,.2,1)' }).finished.then(() => s.remove(), () => s.remove());
+  ], { duration: 900, easing: 'cubic-bezier(.2,.8,.2,1)' }).finished.then(() => el.remove(), () => el.remove());
 }
 
-// Fim da sessão: confete saindo do visto.
-function confete() {
-  if (SEM_MOVIMENTO.matches) return;
-  const alvo = $('.done-mark');
-  const cores = ['var(--accent)', 'var(--easy)', 'var(--again)', 'var(--warn)'];
+// End of session: confetti bursting from the check mark.
+function confetti() {
+  if (REDUCED_MOTION.matches) return;
+  const target = $('.done-mark');
+  const colors = ['var(--accent)', 'var(--easy)', 'var(--again)', 'var(--warn)'];
   for (let i = 0; i < 18; i++) {
     const p = document.createElement('i');
-    p.className = 'confete';
-    p.style.background = cores[i % cores.length];
-    alvo.appendChild(p);
-    const ang = (i / 18) * Math.PI * 2 + Math.random() * 0.4;
+    p.className = 'confetti';
+    p.style.background = colors[i % colors.length];
+    target.appendChild(p);
+    const angle = (i / 18) * Math.PI * 2 + Math.random() * 0.4;
     const dist = 60 + Math.random() * 60;
-    const x = Math.cos(ang) * dist, y = Math.sin(ang) * dist;
+    const x = Math.cos(angle) * dist, y = Math.sin(angle) * dist;
     p.animate([
       { transform: 'translate(-50%, -50%) scale(.6)', opacity: 1 },
       { transform: `translate(calc(-50% + ${x}px), calc(-50% + ${y}px)) rotate(${Math.random() * 360}deg) scale(1)`, opacity: 1, offset: 0.7 },
@@ -449,22 +458,22 @@ function confete() {
   }
 }
 
-async function mostrar(c) {
-  if (!c) return terminar();
-  const vez = ++vezDoCartao;
-  soltarEstudo();
-  sess.cur = c.id;
-  // Entrada do cartão novo. A saída do anterior só é solta depois que esta começa, para não piscar.
-  animar($('#flash'), [
+async function showCard(c) {
+  if (!c) return finishSession();
+  const token = ++showToken;
+  releaseStudyMedia();
+  session.current = c.id;
+  // The new card enters. The previous card's exit is only released after this starts, so nothing flickers.
+  animate($('#flash'), [
     { transform: 'translateY(18px) scale(.97)', opacity: 0 },
     { transform: 'none', opacity: 1 },
   ], { duration: 240, easing: 'cubic-bezier(.2,.8,.2,1)' });
-  if (saida) { saida.cancel(); saida = null; }
+  if (leaving) { leaving.cancel(); leaving = null; }
   const deck = deckById(c.deckId);
   $('#flash-deck').textContent = deck ? deck.name : '';
-  $('#flash-novo').hidden = c.state !== 'new';
-  $('#flash').classList.remove('aberto');
-  $$('.speak').forEach(b => { b.hidden = true; });
+  $('#flash-new').hidden = c.state !== 'new';
+  $('#flash').classList.remove('open');
+  $$('.play').forEach(b => { b.hidden = true; });
   $('#front').textContent = c.front;
   $('#back').textContent = c.back;
   $('#front-img').hidden = true;
@@ -472,234 +481,227 @@ async function mostrar(c) {
   $('#answer').hidden = true;
   $('#reveal').hidden = false;
   $('#grade').hidden = true;
-  const resta = sess.queue.length + sess.learning.length;
-  const total = sess.done + resta;
-  $('#prog').style.width = (total ? (sess.done / total) * 100 : 0) + '%';
-  $('#left').textContent = resta === 1 ? '1 restante' : `${resta} restantes`;
+  const remaining = session.queue.length + session.learning.length;
+  const total = session.done + remaining;
+  $('#progress').style.width = (total ? (session.done / total) * 100 : 0) + '%';
+  $('#left').textContent = tn('left', remaining);
 
-  for (const f of FACES) for (const k of TIPOS) {
-    const id = c.midia && c.midia[f] && c.midia[f][k];
+  for (const f of FACES) for (const k of KINDS) {
+    const id = c.media && c.media[f] && c.media[f][k];
     if (!id) continue;
-    const blob = await Midia.get(id).catch(() => null);
-    if (vez !== vezDoCartao) return; // já passou para o próximo
-    if (blob) estudoMidia[f][k] = URL.createObjectURL(blob);
+    const blob = await MediaStore.get(id).catch(() => null);
+    if (token !== showToken) return; // already moved on to the next card
+    if (blob) studyMedia[f][k] = URL.createObjectURL(blob);
   }
-  $$('.speak').forEach(b => {
-    const f = b.dataset.face;
-    b.hidden = !estudoMidia[f].audio; // o alto-falante só existe quando o cartão tem áudio
-  });
+  $$('.play').forEach(b => { b.hidden = !studyMedia[b.dataset.face].audio; }); // the speaker only exists when the card has audio
   FACES.forEach(f => {
     const img = $(`#${f}-img`);
-    img.hidden = !estudoMidia[f].img;
-    if (estudoMidia[f].img) img.src = estudoMidia[f].img;
+    img.hidden = !studyMedia[f].img;
+    if (studyMedia[f].img) img.src = studyMedia[f].img;
   });
-  tocar('front'); // o áudio gravado toca sozinho
+  play('front'); // recorded audio plays on its own
 }
 
-let reveladoEm = 0;
-async function revelar() {
-  if (!sess || animando || !$('#answer').hidden) return;
-  const c = cardById(sess.cur);
+let revealedAt = 0;
+async function reveal() {
+  if (!session || animating || !$('#answer').hidden) return;
+  const c = cardById(session.current);
   if (!c) return;
   const flash = $('#flash');
-  animando = true;
-  // Gira até ficar de lado (some), troca o conteúdo e volta girando do outro lado, com um leve passo a mais.
-  await animar(flash, [
+  animating = true;
+  // Turn until edge-on (invisible), swap the content, turn back from the other side with a small overshoot.
+  await animate(flash, [
     { transform: 'perspective(900px) rotateY(0deg)' },
     { transform: 'perspective(900px) rotateY(90deg)' },
   ], { duration: 160, easing: 'cubic-bezier(.4,0,1,1)' }).finished;
-  if (!sess || sess.cur !== c.id) { animando = false; return; }
-  flash.classList.add('aberto');
+  if (!session || session.current !== c.id) { animating = false; return; }
+  flash.classList.add('open');
   $('#answer').hidden = false;
   $('#reveal').hidden = true;
   $('#grade').hidden = false;
-  reveladoEm = performance.now(); // a trava de toque duplo conta de quando os botões aparecem
-  $('#i1').textContent = '1 min';
-  $('#i3').textContent = 'em ' + fmtDias(plan(c, 3).ivl);
-  $('#i4').textContent = 'em ' + fmtDias(plan(c, 4).ivl);
-  animar($('#grade'), [
+  revealedAt = performance.now(); // the double-tap guard counts from when the buttons appear
+  session.intervals = { 3: plan(c, 3).ivl, 4: plan(c, 4).ivl };
+  $('#i1').textContent = t('oneMinute');
+  $('#i3').textContent = t('inDuration', { d: formatDays(session.intervals[3]) });
+  $('#i4').textContent = t('inDuration', { d: formatDays(session.intervals[4]) });
+  animate($('#grade'), [
     { transform: 'translateY(10px)', opacity: 0 },
     { transform: 'none', opacity: 1 },
   ], { duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' });
-  tocar('back');
-  await animar(flash, [
+  play('back');
+  await animate(flash, [
     { transform: 'perspective(900px) rotateY(-90deg)' },
     { transform: 'perspective(900px) rotateY(10deg)', offset: 0.7 },
     { transform: 'perspective(900px) rotateY(0deg)' },
   ], { duration: 320, easing: 'cubic-bezier(0,0,.2,1)' }).finished;
-  animando = false;
+  animating = false;
 }
 
-async function notar(r) {
-  if (!sess || animando || $('#grade').hidden) return;
-  const c = cardById(sess.cur);
-  if (!c) return mostrar(escolher());
+async function rate(r) {
+  if (!session || animating || $('#grade').hidden) return;
+  const c = cardById(session.current);
+  if (!c) return showCard(pickNext());
   const btn = $(`#grade [data-r="${r}"]`);
-  const rotulo = r === 1 ? '↺ 1 min' : $('#i' + r).textContent.replace(/^em /, '+');
-  sess.undo = { card: JSON.parse(JSON.stringify(c)), queue: [...sess.queue], learning: [...sess.learning], done: sess.done, day: dayIdx() };
+  const label = r === 1 ? '↺ ' + t('oneMinute') : '+' + formatDays(session.intervals[r]);
+  session.undo = { card: JSON.parse(JSON.stringify(c)), queue: [...session.queue], learning: [...session.learning], done: session.done, day: dayIndex() };
   answer(c, r);
-  sess.queue = sess.queue.filter(id => id !== c.id);
-  sess.learning = sess.learning.filter(id => id !== c.id);
-  if (r === 1) sess.learning.push(c.id);
-  else sess.done++;
+  session.queue = session.queue.filter(id => id !== c.id);
+  session.learning = session.learning.filter(id => id !== c.id);
+  if (r === 1) session.learning.push(c.id);
+  else session.done++;
   $('#undo').hidden = false;
 
-  animando = true;
-  flutuar(btn, rotulo, r);
-  animar(btn, [{ transform: 'scale(1)' }, { transform: 'scale(1.07)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
-  saida = animar($('#flash'), SAIDAS[r], { duration: r === 1 ? 300 : 240, easing: 'cubic-bezier(.4,0,.6,1)', fill: 'forwards' });
-  await saida.finished;
-  animando = false;
-  mostrar(escolher());
+  animating = true;
+  floatLabel(btn, label, r);
+  animate(btn, [{ transform: 'scale(1)' }, { transform: 'scale(1.07)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
+  leaving = animate($('#flash'), EXITS[r], { duration: r === 1 ? 300 : 240, easing: 'cubic-bezier(.4,0,.6,1)', fill: 'forwards' });
+  await leaving.finished;
+  animating = false;
+  showCard(pickNext());
 }
 
-function desfazer() {
-  const u = sess && sess.undo;
-  if (!u || animando) return;
+function undoLast() {
+  const u = session && session.undo;
+  if (!u || animating) return;
   const i = db.cards.findIndex(x => x.id === u.card.id);
   if (i >= 0) db.cards[i] = u.card;
   db.days[u.day] = (db.days[u.day] || 1) - 1;
   if (db.days[u.day] <= 0) delete db.days[u.day];
-  Object.assign(sess, { queue: u.queue, learning: u.learning, done: u.done, undo: null });
+  Object.assign(session, { queue: u.queue, learning: u.learning, done: u.done, undo: null });
   save();
   $('#undo').hidden = true;
   $('#done').hidden = true;
   $('#flash').hidden = false;
   $('#actions').hidden = false;
-  mostrar(db.cards[i]);
+  showCard(db.cards[i]);
 }
 
-function terminar() {
-  soltarEstudo();
-  if (saida) { saida.cancel(); saida = null; }
+function finishSession() {
+  releaseStudyMedia();
+  if (leaving) { leaving.cancel(); leaving = null; }
   $('#flash').hidden = true;
   $('#actions').hidden = true;
   $('#done').hidden = false;
-  $('#prog').style.width = '100%';
+  $('#progress').style.width = '100%';
   $('#left').textContent = '';
-  $('#done-sub').textContent = `Você revisou ${plural(sess.done, 'cartão', 'cartões')}. ${proximoTexto()}`;
+  $('#done-sub').textContent = t('doneSub', { cards: tn('cards', session.done), next: nextUpText() });
   $('#undo').hidden = true;
-  animar($('#done'), [{ transform: 'translateY(16px)', opacity: 0 }, { transform: 'none', opacity: 1 }],
+  animate($('#done'), [{ transform: 'translateY(16px)', opacity: 0 }, { transform: 'none', opacity: 1 }],
     { duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)' });
-  animar($('.done-mark'), [
+  animate($('.done-mark'), [
     { transform: 'scale(0)' }, { transform: 'scale(1.2)', offset: 0.6 }, { transform: 'scale(1)' },
   ], { duration: 480, easing: 'cubic-bezier(.2,.8,.2,1)', delay: 80, fill: 'backwards' });
-  if (sess.done) confete();
+  if (session.done) confetti();
 }
 
-$('#reveal').addEventListener('click', revelar);
-// Tocar no próprio cartão também mostra a resposta (alvo grande, no meio da tela).
-$('#flash').addEventListener('click', e => { if (!e.target.closest('button')) revelar(); });
+$('#reveal').addEventListener('click', reveal);
+// Tapping the card itself also shows the answer (a big target, in the middle of the screen).
+$('#flash').addEventListener('click', e => { if (!e.target.closest('button')) reveal(); });
 $('#grade').addEventListener('click', e => {
   const b = e.target.closest('[data-r]');
   if (!b) return;
-  // Os botões de nota aparecem onde estava "Mostrar resposta": um toque duplo não pode virar nota sem querer.
-  if (performance.now() - reveladoEm < 350) return;
-  notar(+b.dataset.r);
+  // The rating buttons appear where "Show answer" was: a double tap must not turn into a rating by accident.
+  if (performance.now() - revealedAt < 350) return;
+  rate(+b.dataset.r);
 });
-$('#flash-edit').addEventListener('click', () => { const c = sess && cardById(sess.cur); if (c) abrirCartao(c); });
-$('#undo').addEventListener('click', desfazer);
+$('#flash-edit').addEventListener('click', () => { const c = session && cardById(session.current); if (c) openCardDialog(c); });
+$('#undo').addEventListener('click', undoLast);
 $('#quit').addEventListener('click', () => go('home'));
 $('#done-home').addEventListener('click', () => go('home'));
-$$('.speak').forEach(b => b.addEventListener('click', () => tocar(b.dataset.face)));
+$$('.play').forEach(b => b.addEventListener('click', () => play(b.dataset.face)));
 
 document.addEventListener('keydown', e => {
-  if ($('#v-study').hidden || !sess || e.target.closest('input, textarea, select, dialog')) return;
-  if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); revelar(); }
-  else if (e.key === '1') notar(1);
-  else if (e.key === '2') notar(3);
-  else if (e.key === '3') notar(4);
-  else if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) desfazer();
-  else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) { const c = cardById(sess.cur); if (c) abrirCartao(c); }
+  if ($('#v-study').hidden || !session || e.target.closest('input, textarea, select, dialog')) return;
+  if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); reveal(); }
+  else if (e.key === '1') rate(1);
+  else if (e.key === '2') rate(3);
+  else if (e.key === '3') rate(4);
+  else if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) undoLast();
+  else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) { const c = cardById(session.current); if (c) openCardDialog(c); }
 });
 
-/* ---------- Adicionar ---------- */
+/* ---------- Add ---------- */
 
-function opcoesBaralho(sel, atual) {
-  sel.innerHTML = db.decks.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
-  if (atual && deckById(atual)) sel.value = atual;
+function fillDeckSelect(select, current) {
+  select.innerHTML = db.decks.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  if (current && deckById(current)) select.value = current;
 }
 
-let addR = novoRascunho();
-const addMidia = $$('#add-form .midia').map(cx => montarMidia(cx, cx.dataset.face, () => addR));
+let addDraft = newDraft();
+const addPickers = $$('#add-form .media').map(box => mountMediaPicker(box, box.dataset.face, () => addDraft));
 
 function renderAdd() {
-  const semBaralho = !db.decks.length;
-  $('#add-sem-baralho').hidden = !semBaralho;
-  $('#add-form').hidden = semBaralho;
-  $('#bulk').hidden = semBaralho;
-  if (semBaralho) return;
-  opcoesBaralho($('#add-deck'), db.settings.lastDeck);
-  addMidia.forEach(m => m.render());
+  const noDeck = !db.decks.length;
+  $('#add-no-deck').hidden = !noDeck;
+  $('#add-form').hidden = noDeck;
+  $('#bulk').hidden = noDeck;
+  if (noDeck) return;
+  fillDeckSelect($('#add-deck'), db.settings.lastDeck);
+  addPickers.forEach(p => p.render());
   setTimeout(() => $('#add-front').focus(), 50);
 }
 
-const montarCartao = (deckId, front, back) => ({ id: uid(), deckId, front, back, created: Date.now(), state: 'new' });
-function novoCartao(deckId, front, back) {
-  const c = montarCartao(deckId, front, back);
-  db.cards.push(c);
-  return c;
-}
+const buildCard = (deckId, front, back) => ({ id: uid(), deckId, front, back, created: Date.now(), state: 'new' });
 
-let salvando = false;
+let saving = false;
 $('#add-form').addEventListener('submit', async e => {
   e.preventDefault();
-  if (salvando) return;
+  if (saving) return;
   const front = $('#add-front').value.trim();
   const back = $('#add-back').value.trim();
-  if (!front && !temMidia(addR, 'front')) return toast('A frente precisa de texto, imagem ou áudio.');
-  if (!back && !temMidia(addR, 'back')) return toast('O verso precisa de texto, imagem ou áudio.');
+  if (!front && !draftHasMedia(addDraft, 'front')) return toast(t('frontNeedsContent'));
+  if (!back && !draftHasMedia(addDraft, 'back')) return toast(t('backNeedsContent'));
   const deckId = $('#add-deck').value;
-  salvando = true;
+  saving = true;
   try {
-    const c = montarCartao(deckId, front, back);
-    await gravarRascunho(c, addR); // a mídia primeiro: se falhar, não fica cartão pela metade
+    const c = buildCard(deckId, front, back);
+    await commitDraft(c, addDraft); // media first: if it fails, no half-saved card is left behind
     db.cards.push(c);
     db.settings.lastDeck = deckId;
     save();
   } catch (err) {
-    toast('Não consegui guardar a mídia neste aparelho.');
+    toast(t('mediaSaveFailed'));
     return;
   } finally {
-    salvando = false;
+    saving = false;
   }
-  pedirPersistencia();
-  soltarRascunho(addR);
-  addR = novoRascunho();
-  addMidia.forEach(m => m.render());
+  requestPersistence();
+  releaseDraft(addDraft);
+  addDraft = newDraft();
+  addPickers.forEach(p => p.render());
   $('#add-front').value = '';
   $('#add-back').value = '';
   $('#add-front').focus();
-  toast(`Salvo em ${deckById(deckId).name}.`);
+  toast(t('savedTo', { deck: deckById(deckId).name }));
 });
-// Ctrl+Enter salva de qualquer campo
+// Ctrl+Enter saves from any field
 $('#add-form').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('#add-form').requestSubmit(); }
 });
 
-function limparCampo(s) {
+function cleanField(s) {
   s = s.trim();
   if (/^"[\s\S]*"$/.test(s)) s = s.slice(1, -1).replace(/""/g, '"');
-  if (/<[a-z][\s\S]*>|&[a-z#0-9]+;/i.test(s)) { // HTML vindo de outro app de cartões
+  if (/<[a-z][\s\S]*>|&[a-z#0-9]+;/i.test(s)) { // HTML exported by other flashcard apps
     s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(div|p|li)>/gi, '\n');
     s = new DOMParser().parseFromString(s, 'text/html').body.textContent || '';
   }
   return s.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function lerVarios(texto) {
+function parseMany(text) {
   const ok = [];
-  let ruins = 0;
-  for (const linha of texto.split(/\r?\n/)) {
-    if (!linha.trim() || linha.startsWith('#')) continue; // linhas de cabeçalho: #separator:tab etc.
+  let bad = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith('#')) continue; // header lines such as #separator:tab
     let f, b;
-    if (linha.includes('\t')) [f, b] = linha.split('\t');
-    else if (linha.includes('|')) { const p = linha.split('|'); f = p[0]; b = p.slice(1).join('|'); }
-    f = f && limparCampo(f);
-    b = b && limparCampo(b);
-    if (f && b) ok.push({ front: f, back: b }); else ruins++;
+    if (line.includes('\t')) [f, b] = line.split('\t');
+    else if (line.includes('|')) { const p = line.split('|'); f = p[0]; b = p.slice(1).join('|'); }
+    f = f && cleanField(f);
+    b = b && cleanField(b);
+    if (f && b) ok.push({ front: f, back: b }); else bad++;
   }
-  return { ok, ruins };
+  return { ok, bad };
 }
 
 $('#bulk-file').addEventListener('change', async e => {
@@ -707,172 +709,180 @@ $('#bulk-file').addEventListener('change', async e => {
   if (!f) return;
   $('#bulk-text').value = await f.text();
   e.target.value = '';
-  const { ok } = lerVarios($('#bulk-text').value);
-  toast(`${plural(ok.length, 'cartão lido', 'cartões lidos')}. Confira e toque em Adicionar todos.`);
+  toast(tn('cardsRead', parseMany($('#bulk-text').value).ok.length));
 });
 
 $('#bulk-add').addEventListener('click', () => {
-  const { ok, ruins } = lerVarios($('#bulk-text').value);
-  if (!ok.length) return toast('Não achei nenhuma linha no formato frente | verso.');
+  const { ok, bad } = parseMany($('#bulk-text').value);
+  if (!ok.length) return toast(t('noLinesFound'));
   const deckId = $('#add-deck').value;
-  const ja = new Set(db.cards.filter(c => c.deckId === deckId).map(c => c.front + '\u0000' + c.back));
-  let novos = 0, repetidos = 0;
+  const existing = new Set(db.cards.filter(c => c.deckId === deckId).map(c => c.front + '\u0000' + c.back));
+  let added = 0, dupes = 0;
   for (const c of ok) {
     const k = c.front + '\u0000' + c.back;
-    if (ja.has(k)) { repetidos++; continue; }
-    ja.add(k);
-    novoCartao(deckId, c.front, c.back);
-    novos++;
+    if (existing.has(k)) { dupes++; continue; }
+    existing.add(k);
+    db.cards.push(buildCard(deckId, c.front, c.back));
+    added++;
   }
   db.settings.lastDeck = deckId;
   save();
-  pedirPersistencia();
+  requestPersistence();
   $('#bulk-text').value = '';
-  const extra = [
-    repetidos && plural(repetidos, 'repetido ignorado', 'repetidos ignorados'),
-    ruins && plural(ruins, 'linha sem verso', 'linhas sem verso'),
-  ].filter(Boolean).join(', ');
-  toast(novos ? `${plural(novos, 'cartão adicionado', 'cartões adicionados')}${extra ? ' · ' + extra : ''}.`
-    : `Nada novo: ${extra || 'nenhum cartão'}.`);
+  const extra = [dupes && tn('duplicatesSkipped', dupes), bad && tn('linesWithoutBack', bad)].filter(Boolean).join(', ');
+  toast(added ? `${tn('cardsAdded', added)}${extra ? ' · ' + extra : ''}.` : t('nothingNew', { what: extra || t('noCards') }));
 });
 
-/* ---------- Cartões ---------- */
+/* ---------- Cards ---------- */
 
-function etiqueta(c) {
-  if (c.state === 'new') return ['novo', 'new'];
-  if (c.due <= Date.now()) return ['para hoje', 'due'];
-  return [quando(dayIdx(c.due) - dayIdx()), ''];
+function statusTag(c) {
+  if (c.state === 'new') return [t('tagNew'), 'new'];
+  if (c.due <= Date.now()) return [t('tagDue'), 'due'];
+  return [whenText(dayIndex(c.due) - dayIndex()), ''];
 }
 
 function renderCards() {
-  const sel = $('#cards-deck');
-  const atual = sel.value;
-  sel.innerHTML = `<option value="">Todos</option>` + db.decks.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
-  sel.value = deckById(atual) ? atual : '';
-  listarCartoes();
+  const select = $('#cards-deck');
+  const current = select.value;
+  select.innerHTML = `<option value="">${t('allDecks')}</option>` + db.decks.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  select.value = deckById(current) ? current : '';
+  listCards();
 }
 
-function listarCartoes() {
+function listCards() {
   const deckId = $('#cards-deck').value;
   const q = $('#cards-q').value.trim().toLowerCase();
-  let lista = db.cards.filter(c => (!deckId || c.deckId === deckId) && (!q || (c.front + ' ' + c.back).toLowerCase().includes(q)));
-  lista = lista.sort((a, b) => b.created - a.created);
-  const LIM = 300;
-  $('#cards-info').textContent = lista.length > LIM
-    ? `Mostrando os ${LIM} mais recentes de ${lista.length}. Use a busca.`
-    : plural(lista.length, 'cartão', 'cartões');
-  $('#card-list').innerHTML = lista.length
-    ? lista.slice(0, LIM).map(c => {
-      const [t, cls] = etiqueta(c);
-      const m = c.midia || {};
-      const extras = [(m.front && m.front.img) || (m.back && m.back.img) ? 'imagem' : '', (m.front && m.front.audio) || (m.back && m.back.audio) ? 'áudio' : '']
-        .filter(Boolean).join(' + ');
-      return `<li><button class="citem" data-card="${c.id}"><span class="f"><span>${esc(c.front || '(só mídia)')}</span><span class="tag ${cls}">${t}</span></span><span class="b">${esc(c.back || '(só mídia)')}${extras ? ` · <span class="tag">${extras}</span>` : ''}</span></button></li>`;
+  const list = db.cards
+    .filter(c => (!deckId || c.deckId === deckId) && (!q || (c.front + ' ' + c.back).toLowerCase().includes(q)))
+    .sort((a, b) => b.created - a.created);
+  const LIMIT = 300;
+  $('#cards-info').textContent = list.length > LIMIT ? t('showingRecent', { lim: LIMIT, n: list.length }) : tn('cards', list.length);
+  $('#card-list').innerHTML = list.length
+    ? list.slice(0, LIMIT).map(c => {
+      const [tag, cls] = statusTag(c);
+      const m = c.media || {};
+      const extras = [
+        (m.front && m.front.img) || (m.back && m.back.img) ? t('imageTag') : '',
+        (m.front && m.front.audio) || (m.back && m.back.audio) ? t('audioTag') : '',
+      ].filter(Boolean).join(' + ');
+      return `<li><button class="card-item" data-card="${c.id}"><span class="front-line"><span>${esc(c.front || t('mediaOnly'))}</span><span class="tag ${cls}">${tag}</span></span><span class="back-line">${esc(c.back || t('mediaOnly'))}${extras ? ` · <span class="tag">${extras}</span>` : ''}</span></button></li>`;
     }).join('')
-    : `<li class="empty">${db.cards.length ? 'Nada encontrado.' : 'Nenhum cartão ainda.'}</li>`;
+    : `<li class="empty">${db.cards.length ? t('nothingFound') : t('noCardsList')}</li>`;
 }
-$('#cards-deck').addEventListener('change', listarCartoes);
-$('#cards-q').addEventListener('input', listarCartoes);
+$('#cards-deck').addEventListener('change', listCards);
+$('#cards-q').addEventListener('input', listCards);
 
-let cardEditando = null;
-let editR = novoRascunho();
-const editMidia = $$('#card-form .midia').map(cx => montarMidia(cx, cx.dataset.face, () => editR));
-$('#card-dlg').addEventListener('close', () => { soltarRascunho(editR); editR = novoRascunho(); });
+let editingCard = null;
+let editDraft = newDraft();
+const editPickers = $$('#card-form .media').map(box => mountMediaPicker(box, box.dataset.face, () => editDraft));
+$('#card-dialog').addEventListener('close', () => { releaseDraft(editDraft); editDraft = newDraft(); });
 
 $('#card-list').addEventListener('click', e => {
   const b = e.target.closest('[data-card]');
   const c = b && cardById(b.dataset.card);
-  if (c) abrirCartao(c);
+  if (c) openCardDialog(c);
 });
 
-// Depois de editar: na lista, redesenha a lista; no meio do estudo, volta ao cartão (ou ao próximo, se ele saiu).
-function depoisDeEditar() {
-  if (!sess) return listarCartoes();
-  const c = cardById(sess.cur);
-  mostrar(c && sess.queue.concat(sess.learning).includes(c.id) ? c : escolher());
+// After editing: in the list, redraw the list; mid-session, go back to the card (or the next one, if it left).
+function afterEdit() {
+  if (!session) return listCards();
+  const c = cardById(session.current);
+  showCard(c && session.queue.concat(session.learning).includes(c.id) ? c : pickNext());
 }
 
-async function abrirCartao(c) {
-  cardEditando = c.id;
-  soltarRascunho(editR);
-  editR = await rascunhoDoCartao(c);
-  editMidia.forEach(m => m.render());
-  opcoesBaralho($('#card-deck'), c.deckId);
+async function openCardDialog(c) {
+  editingCard = c.id;
+  releaseDraft(editDraft);
+  editDraft = await draftFromCard(c);
+  editPickers.forEach(p => p.render());
+  fillDeckSelect($('#card-deck'), c.deckId);
   $('#card-front').value = c.front;
   $('#card-back').value = c.back;
   $('#card-meta').textContent = c.state === 'new'
-    ? 'Ainda não estudado.'
-    : `Revisado ${plural(c.reps || 0, 'vez', 'vezes')} · esqueceu ${plural(c.lapses || 0, 'vez', 'vezes')} · volta ${etiqueta(c)[0]} · estabilidade ${fmtDias(Math.max(1, Math.round(c.s)))}`;
-  $('#card-dlg').showModal();
+    ? t('notStudied')
+    : t('cardMeta', {
+      reps: tn('times', c.reps || 0),
+      lapses: tn('times', c.lapses || 0),
+      when: statusTag(c)[0],
+      stability: formatDays(Math.max(1, Math.round(c.s))),
+    });
+  $('#card-dialog').showModal();
 }
 $('#card-form').addEventListener('submit', async e => {
   if (e.submitter && e.submitter.value !== 'ok') return;
-  e.preventDefault(); // fecha só depois de guardar a mídia
-  const c = cardById(cardEditando);
+  e.preventDefault(); // close only after the media is stored
+  const c = cardById(editingCard);
   const front = $('#card-front').value.trim();
   const back = $('#card-back').value.trim();
-  if (!c) return $('#card-dlg').close();
-  if (!front && !temMidia(editR, 'front')) return toast('A frente precisa de texto, imagem ou áudio.');
-  if (!back && !temMidia(editR, 'back')) return toast('O verso precisa de texto, imagem ou áudio.');
-  try { await gravarRascunho(c, editR); }
-  catch (err) { return toast('Não consegui guardar a mídia neste aparelho.'); }
+  if (!c) return $('#card-dialog').close();
+  if (!front && !draftHasMedia(editDraft, 'front')) return toast(t('frontNeedsContent'));
+  if (!back && !draftHasMedia(editDraft, 'back')) return toast(t('backNeedsContent'));
+  try { await commitDraft(c, editDraft); }
+  catch (err) { return toast(t('mediaSaveFailed')); }
   Object.assign(c, { front, back, deckId: $('#card-deck').value });
   save();
-  $('#card-dlg').close();
-  depoisDeEditar();
+  $('#card-dialog').close();
+  afterEdit();
 });
-$('#card-del').addEventListener('click', e => confirmar(e.currentTarget, 'Confirmar', () => {
-  apagarMidiaDe(db.cards.filter(c => c.id === cardEditando));
-  db.cards = db.cards.filter(c => c.id !== cardEditando);
-  if (sess) { // apagado no meio do estudo: sai da fila
-    sess.queue = sess.queue.filter(id => id !== cardEditando);
-    sess.learning = sess.learning.filter(id => id !== cardEditando);
-    sess.undo = null;
+$('#card-delete').addEventListener('click', e => confirmTap(e.currentTarget, t('confirm'), () => {
+  deleteMediaOf(db.cards.filter(c => c.id === editingCard));
+  db.cards = db.cards.filter(c => c.id !== editingCard);
+  if (session) { // deleted mid-session: drop it from the queue
+    session.queue = session.queue.filter(id => id !== editingCard);
+    session.learning = session.learning.filter(id => id !== editingCard);
+    session.undo = null;
     $('#undo').hidden = true;
   }
   save();
-  $('#card-dlg').close();
-  depoisDeEditar();
-  toast('Cartão apagado.');
+  $('#card-dialog').close();
+  afterEdit();
+  toast(t('cardDeleted'));
 }));
-$('#card-reset').addEventListener('click', e => confirmar(e.currentTarget, 'Zerar o progresso?', () => {
-  const c = cardById(cardEditando);
+$('#card-reset').addEventListener('click', e => confirmTap(e.currentTarget, t('resetConfirm'), () => {
+  const c = cardById(editingCard);
   if (!c) return;
   ['s', 'd', 'due', 'last', 'reps', 'lapses', 'introduced'].forEach(k => delete c[k]);
   c.state = 'new';
   save();
-  $('#card-dlg').close();
-  depoisDeEditar();
-  toast('O cartão volta como novo.');
+  $('#card-dialog').close();
+  afterEdit();
+  toast(t('cardReset'));
 }));
 
-/* ---------- Ajustes ---------- */
+/* ---------- Settings ---------- */
 
-function textoRetencao(r) {
+function retentionText(r) {
   const p = Math.round(r * 100);
-  const media = FSRS.nextInterval(10, r) / 10; // quanto o intervalo muda em relação aos 90%
-  const ritmo = media >= 1 ? `intervalos ${media.toFixed(1).replace('.', ',')}× maiores` : `revisões ${(1 / media).toFixed(1).replace('.', ',')}× mais frequentes`;
-  if (p === 90) return 'De cada 10 cartões, você lembra 9 na hora da revisão. É o valor recomendado.';
-  return `De cada 100 cartões, você lembra ${p} na hora da revisão — ${ritmo} que no padrão (90%).`;
+  if (p === 90) return t('retention90');
+  const ratio = FSRS.nextInterval(10, r) / 10; // how the interval changes compared with 90%
+  const pace = ratio >= 1 ? t('longerIntervals', { x: formatDecimal(ratio) }) : t('moreFrequent', { x: formatDecimal(1 / ratio) });
+  return t('retentionOther', { p, pace });
 }
 
-function textoBackup() {
+function backupText() {
   if (!db.cards.length) return '';
-  const quando = db.settings.lastBackup;
-  if (!quando) return 'Você ainda não baixou nenhum backup. Os cartões só existem neste aparelho.';
-  const d = dayIdx() - dayIdx(quando);
-  return 'Último backup: ' + (d <= 0 ? 'hoje' : d === 1 ? 'ontem' : `há ${d} dias`) + '.';
+  const last = db.settings.lastBackup;
+  if (!last) return t('noBackupYet');
+  const d = dayIndex() - dayIndex(last);
+  return t('lastBackup', { when: d <= 0 ? t('today') : d === 1 ? t('yesterday') : t('daysAgo', { n: d }) });
 }
 
 function renderSettings() {
-  $('#card-instalar').hidden = NO_APK; // dentro do APK já está instalado
+  $('#install-card').hidden = IN_APK; // inside the APK it is already installed
+  $('#set-lang').value = db.settings.lang;
   $('#set-new').value = db.settings.newPerDay;
-  $('#backup-info').textContent = textoBackup();
+  $('#backup-info').textContent = backupText();
   $('#set-ret').value = db.settings.retention;
   $('#ret-val').textContent = Math.round(db.settings.retention * 100) + '%';
-  $('#ret-help').textContent = textoRetencao(db.settings.retention);
+  $('#ret-help').textContent = retentionText(db.settings.retention);
   $('#import-msg').textContent = '';
 }
+$('#set-lang').addEventListener('change', e => {
+  db.settings.lang = e.target.value;
+  save();
+  setLanguage(db.settings.lang);
+  renderSettings();
+});
 $('#set-new').addEventListener('change', e => {
   db.settings.newPerDay = Math.max(0, Math.min(200, parseInt(e.target.value, 10) || 0));
   e.target.value = db.settings.newPerDay;
@@ -881,97 +891,118 @@ $('#set-new').addEventListener('change', e => {
 $('#set-ret').addEventListener('input', e => {
   db.settings.retention = Math.round(parseFloat(e.target.value) * 100) / 100;
   $('#ret-val').textContent = Math.round(db.settings.retention * 100) + '%';
-  $('#ret-help').textContent = textoRetencao(db.settings.retention);
+  $('#ret-help').textContent = retentionText(db.settings.retention);
   save();
 });
 
 $('#export').addEventListener('click', async () => {
-  const midia = await midiaParaBackup(db.cards);
-  const json = JSON.stringify({ app: 'fixa', versao: 2, salvoEm: new Date().toISOString(), ...db, midia });
-  const nome = `fixa-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  if (NO_APK) return FixaAndroid.salvarBackup(nome, json); // o Android abre "salvar como"; a resposta vem em backupSalvo
+  const media = await mediaForBackup(db.cards);
+  const json = JSON.stringify({ app: 'fixa', version: 3, savedAt: new Date().toISOString(), ...db, media });
+  const name = `fixa-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  if (IN_APK) return FixaAndroid.saveBackup(name, json); // Android opens "save as"; the answer comes back in onBackupSaved
   const blob = new Blob([json], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = nome;
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  backupSalvo(true);
+  onBackupSaved(true);
 });
-// Chamado aqui (navegador) e pelo APK depois de gravar o arquivo.
-window.backupSalvo = backupSalvo;
-function backupSalvo(ok) {
-  if (!ok) return toast('Não consegui salvar o backup.');
+// Called here (browser) and by the APK after it writes the file.
+window.onBackupSaved = onBackupSaved;
+function onBackupSaved(ok) {
+  if (!ok) return toast(t('backupSaveFailed'));
   db.settings.lastBackup = Date.now();
   save();
-  $('#backup-info').textContent = textoBackup();
-  if (NO_APK) toast('Backup salvo.');
+  $('#backup-info').textContent = backupText();
+  if (IN_APK) toast(t('backupSaved'));
 }
 
-let backupPendente = null;
+let pendingBackup = null;
 $('#import').addEventListener('change', async e => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f) return;
   try {
     const d = JSON.parse(await f.text());
-    if (!Array.isArray(d.cards) || !Array.isArray(d.decks)) throw new Error('formato');
-    backupPendente = d;
-    $('#import-msg').innerHTML = `Backup com ${plural(d.cards.length, 'cartão', 'cartões')} em ${plural(d.decks.length, 'baralho', 'baralhos')}. ` +
-      `<button class="btn danger" id="import-ok">Substituir o que está aqui</button>`;
-    $('#import-ok').addEventListener('click', ev => confirmar(ev.currentTarget, 'Confirmar substituição', async () => {
-      const b = backupPendente;
-      backupPendente = null;
-      try { await restaurarMidia(b.midia); }
-      catch (err) { return toast('Não consegui restaurar a mídia; nada foi trocado.'); }
-      db = { decks: b.decks, cards: b.cards, days: b.days || {}, settings: { ...DEFAULTS, ...b.settings } };
+    if (!Array.isArray(d.cards) || !Array.isArray(d.decks)) throw new Error('format');
+    pendingBackup = d;
+    $('#import-msg').innerHTML = esc(t('backupContains', { cards: tn('cards', d.cards.length), decks: tn('deckCount', d.decks.length) })) +
+      ` <button class="btn danger" id="import-ok">${esc(t('replaceHere'))}</button>`;
+    $('#import-ok').addEventListener('click', ev => confirmTap(ev.currentTarget, t('confirmReplace'), async () => {
+      const b = pendingBackup;
+      pendingBackup = null;
+      try { await restoreMedia(b.media || b.midia); } // older backups called the field "midia"
+      catch (err) { return toast(t('restoreFailed')); }
+      const lang = db.settings.lang;
+      db = normalize({ decks: b.decks, cards: b.cards, days: b.days, settings: b.settings });
+      db.settings.lang = lang; // the language is a preference of this device, not of the backup
       save();
       renderSettings();
-      toast('Backup restaurado.');
+      toast(t('backupRestored'));
     }));
   } catch (err) {
-    $('#import-msg').textContent = 'Esse arquivo não é um backup do Fixa.';
+    $('#import-msg').textContent = t('notABackup');
   }
 });
 
-$('#wipe').addEventListener('click', e => confirmar(e.currentTarget, `Apagar ${plural(db.decks.length, 'baralho', 'baralhos')} e ${plural(db.cards.length, 'cartão', 'cartões')}?`, () => {
-  Midia.limpar().catch(() => {});
+$('#wipe').addEventListener('click', e => confirmTap(e.currentTarget, t('wipeConfirm', { decks: tn('deckCount', db.decks.length), cards: tn('cards', db.cards.length) }), () => {
+  MediaStore.clear().catch(() => {});
+  const lang = db.settings.lang;
   db = fresh();
+  db.settings.lang = lang;
   save();
-  toast('Tudo apagado.');
+  toast(t('wiped'));
 }));
 
-let pedidoInstalar = null;
+let installPrompt = null;
 addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
-  pedidoInstalar = e;
+  installPrompt = e;
   $('#install-btn').hidden = false;
 });
 $('#install-btn').addEventListener('click', async () => {
-  if (!pedidoInstalar) return;
-  pedidoInstalar.prompt();
-  await pedidoInstalar.userChoice.catch(() => {});
-  pedidoInstalar = null;
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
   $('#install-btn').hidden = true;
 });
 
-/* ---------- Partida ---------- */
+/* ---------- Start-up ---------- */
 
-if (!NO_APK && 'serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname))) {
-  // Quando uma versão nova assume, recarrega uma vez, para ninguém ficar preso na versão guardada.
-  const jaTinhaVersao = !!navigator.serviceWorker.controller;
-  let recarregou = false;
+if (!IN_APK && 'serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname))) {
+  // When a new version takes over, reload once, so nobody is stuck on the cached one.
+  const hadVersion = !!navigator.serviceWorker.controller;
+  let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!jaTinhaVersao || recarregou) return;
-    recarregou = true;
+    if (!hadVersion || reloaded) return;
+    reloaded = true;
     location.reload();
   });
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
-// Voltou para o app no dia seguinte: atualiza os números.
+// Came back to the app the next day: refresh the numbers.
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && !$('#v-home').hidden) renderHome();
 });
-route();
+setLanguage(db.settings.lang);
+if (db.settings.lang === 'pt' || db.settings.lang === 'en') {
+  route();
+} else {
+  // First run: ask for the language before anything else. The question is shown in the device language.
+  $('#welcome').hidden = false;
+  document.body.classList.add('welcoming');
+}
+$('#welcome').addEventListener('click', e => {
+  const b = e.target.closest('[data-lang]');
+  if (!b) return;
+  db.settings.lang = b.dataset.lang;
+  save();
+  setLanguage(db.settings.lang);
+  $('#welcome').hidden = true;
+  document.body.classList.remove('welcoming');
+  route();
+});

@@ -1,8 +1,8 @@
 {
-  "name": "Fixa — revisão espaçada",
+  "name": "Fixa — spaced repetition",
   "short_name": "Fixa",
-  "description": "Cartões de revisão espaçada com o algoritmo FSRS-6, numa tela simples.",
-  "lang": "pt-BR",
+  "description": "Spaced repetition flashcards with the FSRS-6 algorithm, on a simple screen.",
+  "lang": "en",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

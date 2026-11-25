@@ -2,10 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
-// O APK não tem código de app próprio: ele empacota o site (a pasta de cima) e o abre de dentro do arquivo.
-def site = rootProject.file('..')
-// A chave de assinatura nunca entra no repositório: vem de variáveis de ambiente (ver LEIA-ME.md).
-def chave = System.getenv('FIXA_KEYSTORE')
+// The APK has no app code of its own: it packs the web app (the parent folder) and opens it from inside the file.
+def webApp = rootProject.file('..')
+// The signing key never goes into the repository: it comes from environment variables (see README.md).
+def keystore = System.getenv('FIXA_KEYSTORE')
 
 android {
     namespace 'app.fixa'
@@ -15,17 +15,17 @@ android {
         applicationId 'app.fixa'
         minSdk 27
         targetSdk 34
-        versionCode 4
-        versionName '0.1.0'
+        versionCode 5
+        versionName '0.2.0'
     }
 
     signingConfigs {
-        if (chave) {
+        if (keystore) {
             release {
-                storeFile file(chave)
-                storePassword System.getenv('FIXA_KEYSTORE_SENHA')
+                storeFile file(keystore)
+                storePassword System.getenv('FIXA_KEYSTORE_PASSWORD')
                 keyAlias 'fixa'
-                keyPassword System.getenv('FIXA_KEYSTORE_SENHA')
+                keyPassword System.getenv('FIXA_KEYSTORE_PASSWORD')
             }
         }
     }
@@ -33,7 +33,7 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            if (chave) signingConfig signingConfigs.release
+            if (keystore) signingConfig signingConfigs.release
         }
     }
 
@@ -43,16 +43,16 @@ android {
     }
 
     sourceSets {
-        main { assets.srcDirs = ["$buildDir/site"] }
+        main { assets.srcDirs = ["$buildDir/webapp"] }
     }
 
     lint { checkReleaseBuilds false }
 }
 
-tasks.register('copiarSite', Copy) {
-    from(site) {
-        include 'index.html', 'style.css', 'app.js', 'fsrs.js', 'midia.js', 'manifest.webmanifest', 'icons/**'
+tasks.register('copyWebApp', Copy) {
+    from(webApp) {
+        include 'index.html', 'style.css', 'i18n.js', 'app.js', 'fsrs.js', 'media.js', 'manifest.webmanifest', 'icons/**'
     }
-    into "$buildDir/site"
+    into "$buildDir/webapp"
 }
-preBuild.dependsOn copiarSite
+preBuild.dependsOn copyWebApp

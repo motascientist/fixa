@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Só o microfone, para gravar áudio no cartão. Sem INTERNET de propósito: o app não tem como enviar dado nenhum. -->
+    <!-- Only the microphone, to record audio on a card. No INTERNET on purpose: the app has no way to send data anywhere. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
-    <!-- allowBackup desligado: os cartões não sobem para a conta Google. Backup é o arquivo que o dono baixa. -->
+    <!-- allowBackup off: cards are not uploaded to the Google account. The backup is the file the user downloads. -->
     <application
         android:allowBackup="false"
         android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/nome"
-        android:theme="@style/Tema">
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard"

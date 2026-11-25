@@ -1,66 +1,80 @@
 # Fixa
 
-Cartões de revisão espaçada numa tela simples. Você cria os cartões, o app decide quando cada um volta — logo antes de
-você esquecer. Funciona no navegador, instala no celular como app e também sai como APK para Android. **Nada sai do
-aparelho**: não há servidor, conta nem rastreamento.
+[![Download the Android APK](https://img.shields.io/badge/Download-Android%20APK-2E5E4E?style=for-the-badge&logo=android&logoColor=white)](https://github.com/motascientist/fixa/releases/latest/download/fixa.apk)
 
-| Início | Pergunta | Resposta | Respondeu | Fim |
-|---|---|---|---|---|
-| ![Início](docs/telas/inicio.png) | ![Frente do cartão](docs/telas/frente.png) | ![Verso do cartão](docs/telas/verso.png) | ![Animação ao responder](docs/telas/lembrei.png) | ![Fim da sessão](docs/telas/fim.png) |
+Spaced repetition flashcards on a simple screen. You write the cards; the app decides when each one comes back —
+right before you would forget it. It runs in the browser, installs on a phone as an app, and ships as an Android APK.
+**Nothing leaves the device**: no server, no account, no tracking. Available in **English** and **Portuguese**.
 
-## O que faz
+| Pick a language | Home | Question | Answer | Rated | Done |
+|---|---|---|---|---|---|
+| ![Language picker](docs/screens/welcome.png) | ![Home](docs/screens/home.png) | ![Card front](docs/screens/front.png) | ![Card back](docs/screens/back.png) | ![Rating animation](docs/screens/remembered.png) | ![End of session](docs/screens/done.png) |
 
-- **Agenda cada cartão com o FSRS-6**, um algoritmo aberto de repetição espaçada. Para cada cartão ele guarda a
-  *estabilidade* (dias até a chance de lembrar cair para 90%) e a *dificuldade*, e atualiza as duas a cada resposta.
-  Um cartão que você sempre lembra volta em 2, 11, 46 e 163 dias; se esquecer, recua para 3 dias e reconstrói.
-- **Três botões**: Esqueci, Lembrei, Fácil. Cada um mostra quando o cartão volta. Esqueci traz o cartão de novo em um
-  minuto, na mesma sessão.
-- **Imagem e áudio** em qualquer lado do cartão: arquivo, print colado com Ctrl+V ou áudio gravado na hora.
-- **Baralhos** com limite de cartões novos por dia em cada um.
-- **Animações curtas** ao virar, ao responder e no fim da sessão — e nenhuma para quem liga "reduzir movimento".
-- **Desfazer** a última resposta e **editar** o cartão sem sair do estudo.
-- **Colar vários** cartões de uma vez (`frente | verso`, ou texto separado por tabulação).
-- **Backup** num arquivo, com a mídia junto. Modo claro e escuro.
+## Features
 
-## Como é feito
+- **Schedules every card with FSRS-6**, an open spaced repetition algorithm. For each card it tracks *stability*
+  (days until your chance of recall drops to 90%) and *difficulty*, and updates both after every answer. A card you
+  always remember comes back after 2, 11, 46 and 163 days; forget it and it drops back to 3 days and rebuilds.
+- **Three buttons**: Forgot, Remembered, Easy. Each shows when the card will return. Forgot brings the card back in
+  one minute, in the same session.
+- **Images and audio** on either side of a card: pick a file, paste a screenshot with Ctrl+V, or record on the spot.
+- **Decks**, each with its own daily limit of new cards.
+- **Bilingual**: on first run the app asks for your language, in your phone's language; you can switch any time.
+- **Short animations** when flipping, rating and finishing a session — and none for users who turn on "reduce motion".
+- **Undo** the last answer and **edit** a card without leaving the session.
+- **Paste many** cards at once (`front | back`, or tab-separated text).
+- **Backup** to a file, media included. Light and dark mode.
 
-| Peça | Escolha |
+## Install on Android
+
+1. On your phone, open the [download link](https://github.com/motascientist/fixa/releases/latest/download/fixa.apk)
+   (or go to [Releases](https://github.com/motascientist/fixa/releases)).
+2. Open the downloaded `fixa.apk`. If Android asks, allow installs from that source.
+3. Tap **Install**. If Play Protect says it doesn't know the app, choose **Install anyway**.
+
+The APK has no internet permission — your cards stay on the phone. The only permission is the microphone, to record audio.
+
+## How it's built
+
+| Part | Choice |
 |---|---|
-| App | HTML, CSS e JavaScript puros. Sem framework, sem etapa de build |
-| Agendador | [`fsrs.js`](fsrs.js): o FSRS-6 reescrito a partir das fórmulas publicadas, ~100 linhas |
-| Dados | Texto no `localStorage`; imagem e áudio no IndexedDB, com foto reduzida para 1280 px |
-| Instalável | PWA (manifest + service worker): abre sem internet depois da primeira visita |
-| Android | [`android/`](android/): uma Activity com WebView que leva o site dentro do APK. **Sem permissão de internet** — só o microfone, para gravar áudio |
+| App | Plain HTML, CSS and JavaScript. No framework, no build step |
+| Scheduler | [`fsrs.js`](fsrs.js): FSRS-6 rewritten from the published formulas, ~100 lines |
+| Languages | [`i18n.js`](i18n.js): every interface string in English and Portuguese, with plural forms |
+| Data | Card text in `localStorage`; images and audio in IndexedDB ([`media.js`](media.js)), photos shrunk to 1280 px |
+| Installable | PWA (manifest + service worker): opens offline after the first visit |
+| Android | [`android/`](android/): one Activity with a WebView that carries the web app inside the APK. **No internet permission** |
 
-## Rodar
+## Run locally
 
 ```bash
-python -m http.server 8000   # e abrir http://localhost:8000
+python -m http.server 8000   # then open http://localhost:8000
 ```
 
-Para instalar no celular a partir do site, ele precisa estar publicado em HTTPS. Ou baixe o APK em
-[Releases](../../releases). Para montar o APK você mesmo, veja [`android/LEIA-ME.md`](android/LEIA-ME.md).
+To install it on a phone straight from the website, it has to be served over HTTPS. To build the APK yourself, see
+[`android/README.md`](android/README.md).
 
-## Testes
+## Tests
 
-| Comando | O que confere |
+| Command | What it checks |
 |---|---|
-| `node teste/fsrs.test.js` | o agendador contra os valores esperados da implementação de referência do FSRS-6 |
-| `python teste/fluxo.py` | o app inteiro num Chrome sem janela: criar, colar, estudar, desfazer, mídia, backup |
-| `python teste/animacao.py` | as animações, com e sem "reduzir movimento" |
-| `python teste/apk_ponte.py` | a conversa do site com a casca Android, simulada |
+| `node tests/fsrs.test.js` | the scheduler against the expected values of the FSRS-6 reference implementation |
+| `python tests/flow.py` | the whole app in a headless Chrome: language, decks, pasting, studying, undo, media, backup |
+| `python tests/language_and_upgrade.py` | the language picker, live switching, and upgrading data saved by v0.1.0 |
+| `python tests/animation.py` | the animations, with and without "reduce motion" |
+| `python tests/android_bridge.py` | the web app's side of the Android bridge, simulated |
 
-Os testes em Python usam [Playwright](https://playwright.dev/python/). `python ferramentas/telas.py` refaz as telas
-deste README.
+The Python tests use [Playwright](https://playwright.dev/python/). `python tools/screenshots.py` regenerates the
+screenshots in this README.
 
-## Créditos
+## Credits
 
-O algoritmo FSRS é do projeto [Open Spaced Repetition](https://github.com/open-spaced-repetition). As fórmulas e os
-parâmetros padrão vêm da implementação de referência
-[`fsrs-rs`](https://github.com/open-spaced-repetition/fsrs-rs/tree/v6.6.2) (BSD-3-Clause); o código deste projeto foi
-escrito do zero.
+The FSRS algorithm comes from the [Open Spaced Repetition](https://github.com/open-spaced-repetition) project. The
+formulas and default parameters follow the reference implementation
+[`fsrs-rs`](https://github.com/open-spaced-repetition/fsrs-rs/tree/v6.6.2) (BSD-3-Clause); the code in this repository
+was written from scratch.
 
-## Licença
+## License
 
-[MIT](LICENSE). Use, copie e modifique à vontade; o software é fornecido como está, sem garantia, e o autor não
-responde por danos do uso.
+[MIT](LICENSE). Use, copy and modify freely; the software is provided as is, without warranty, and the author is not
+liable for any damage arising from its use.

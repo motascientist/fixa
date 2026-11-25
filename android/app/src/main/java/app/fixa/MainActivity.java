@@ -23,173 +23,173 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 
 /**
- * Casca do Fixa para Android: abre o site que vai DENTRO do APK (pasta assets), sem internet.
+ * Android shell for Fixa: opens the web app that ships INSIDE the APK (assets folder), with no internet.
  *
- * O site é servido num endereço https de mentira, reservado pelo Google para isso
- * (appassets.androidplatform.net). Precisa ser https para o navegador liberar microfone e
- * armazenamento; nenhuma requisição sai do aparelho — o app nem tem a permissão INTERNET.
+ * The app is served from a reserved fake https origin (appassets.androidplatform.net). It has to be https so the
+ * WebView allows the microphone and storage; no request ever leaves the device — the app does not even hold the
+ * INTERNET permission.
  *
- * O que o navegador embutido não faz sozinho e esta classe resolve:
- *  - escolher arquivo (imagem, áudio, backup);
- *  - pedir o microfone para gravar;
- *  - salvar o backup num arquivo — ponte FixaAndroid.salvarBackup.
+ * What the WebView does not do on its own, and this class handles:
+ *  - picking files (image, audio, backup);
+ *  - asking for the microphone to record;
+ *  - saving the backup to a file — bridge FixaAndroid.saveBackup.
  */
 public class MainActivity extends Activity {
     private static final String HOST = "appassets.androidplatform.net";
-    private static final String ORIGEM = "https://" + HOST + "/";
-    private static final int PEDIDO_ARQUIVO = 1;
-    private static final int PEDIDO_MIC = 2;
-    private static final int PEDIDO_SALVAR = 3;
+    private static final String ORIGIN = "https://" + HOST + "/";
+    private static final int REQUEST_FILE = 1;
+    private static final int REQUEST_MIC = 2;
+    private static final int REQUEST_SAVE = 3;
 
     private WebView web;
-    private ValueCallback<Uri[]> retornoArquivo;
-    private PermissionRequest pedidoMic;
-    private String backupPendente;
+    private ValueCallback<Uri[]> fileCallback;
+    private PermissionRequest micRequest;
+    private String pendingBackup;
 
     @Override
-    protected void onCreate(Bundle estado) {
-        super.onCreate(estado);
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
         web = new WebView(this);
         setContentView(web);
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);   // localStorage: o texto dos cartões
-        s.setDatabaseEnabled(true);     // IndexedDB: imagem e áudio
-        s.setMediaPlaybackRequiresUserGesture(false); // o áudio do cartão toca sozinho
+        s.setDomStorageEnabled(true);   // localStorage: card text
+        s.setDatabaseEnabled(true);     // IndexedDB: images and audio
+        s.setMediaPlaybackRequiresUserGesture(false); // card audio plays on its own
         s.setAllowFileAccess(false);
 
-        web.addJavascriptInterface(new Ponte(), "FixaAndroid");
+        web.addJavascriptInterface(new Bridge(), "FixaAndroid");
 
         web.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
-                return servir(req.getUrl());
+                return serve(req.getUrl());
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
-                return !HOST.equals(req.getUrl().getHost()); // nada navega para fora do app
+                return !HOST.equals(req.getUrl().getHost()); // nothing navigates outside the app
             }
         });
 
         web.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> retorno, FileChooserParams p) {
-                if (retornoArquivo != null) retornoArquivo.onReceiveValue(null);
-                retornoArquivo = retorno;
+            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback, FileChooserParams p) {
+                if (fileCallback != null) fileCallback.onReceiveValue(null);
+                fileCallback = callback;
                 try {
-                    startActivityForResult(p.createIntent(), PEDIDO_ARQUIVO);
+                    startActivityForResult(p.createIntent(), REQUEST_FILE);
                     return true;
                 } catch (Exception e) {
-                    retornoArquivo = null;
+                    fileCallback = null;
                     return false;
                 }
             }
 
             @Override
-            public void onPermissionRequest(final PermissionRequest pedido) {
+            public void onPermissionRequest(final PermissionRequest request) {
                 runOnUiThread(() -> {
-                    boolean querMic = false;
-                    for (String r : pedido.getResources()) {
-                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) querMic = true;
+                    boolean wantsMic = false;
+                    for (String r : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsMic = true;
                     }
-                    if (!querMic) {
-                        pedido.deny();
+                    if (!wantsMic) {
+                        request.deny();
                     } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                        pedido.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                        request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
                     } else {
-                        pedidoMic = pedido;
-                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, PEDIDO_MIC);
+                        micRequest = request;
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_MIC);
                     }
                 });
             }
         });
 
-        web.loadUrl(ORIGEM + "index.html");
+        web.loadUrl(ORIGIN + "index.html");
     }
 
-    /** Entrega um arquivo da pasta assets como se viesse do endereço https do app. */
-    private WebResourceResponse servir(Uri u) {
+    /** Serves a file from the assets folder as if it came from the app's https origin. */
+    private WebResourceResponse serve(Uri u) {
         if (!HOST.equals(u.getHost())) return null;
-        String caminho = u.getPath();
-        if (caminho == null || caminho.equals("/")) caminho = "/index.html";
-        caminho = caminho.substring(1);
-        if (!caminho.contains("..")) {
+        String path = u.getPath();
+        if (path == null || path.equals("/")) path = "/index.html";
+        path = path.substring(1);
+        if (!path.contains("..")) {
             try {
-                return new WebResourceResponse(tipo(caminho), ehTexto(caminho) ? "utf-8" : null, getAssets().open(caminho));
+                return new WebResourceResponse(mimeType(path), isText(path) ? "utf-8" : null, getAssets().open(path));
             } catch (IOException e) {
-                // cai no 404 abaixo
+                // falls through to the 404 below
             }
         }
         return new WebResourceResponse("text/plain", "utf-8", 404, "Not Found",
                 new HashMap<String, String>(), new ByteArrayInputStream(new byte[0]));
     }
 
-    private static boolean ehTexto(String c) {
-        return !c.endsWith(".png");
+    private static boolean isText(String path) {
+        return !path.endsWith(".png");
     }
 
-    private static String tipo(String c) {
-        if (c.endsWith(".html")) return "text/html";
-        if (c.endsWith(".css")) return "text/css";
-        if (c.endsWith(".js")) return "text/javascript";
-        if (c.endsWith(".png")) return "image/png";
-        if (c.endsWith(".webmanifest") || c.endsWith(".json")) return "application/json";
+    private static String mimeType(String path) {
+        if (path.endsWith(".html")) return "text/html";
+        if (path.endsWith(".css")) return "text/css";
+        if (path.endsWith(".js")) return "text/javascript";
+        if (path.endsWith(".png")) return "image/png";
+        if (path.endsWith(".webmanifest") || path.endsWith(".json")) return "application/json";
         return "application/octet-stream";
     }
 
     @Override
-    protected void onActivityResult(int pedido, int resultado, Intent dados) {
-        super.onActivityResult(pedido, resultado, dados);
-        if (pedido == PEDIDO_ARQUIVO) {
-            if (retornoArquivo != null) {
-                retornoArquivo.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultado, dados));
-                retornoArquivo = null;
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == REQUEST_FILE) {
+            if (fileCallback != null) {
+                fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data));
+                fileCallback = null;
             }
-        } else if (pedido == PEDIDO_SALVAR) {
-            String conteudo = backupPendente;
-            backupPendente = null;
-            if (resultado != RESULT_OK || dados == null || dados.getData() == null || conteudo == null) return;
+        } else if (request == REQUEST_SAVE) {
+            String content = pendingBackup;
+            pendingBackup = null;
+            if (result != RESULT_OK || data == null || data.getData() == null || content == null) return;
             boolean ok = true;
-            try (OutputStream out = getContentResolver().openOutputStream(dados.getData())) {
-                out.write(conteudo.getBytes(StandardCharsets.UTF_8));
+            try (OutputStream out = getContentResolver().openOutputStream(data.getData())) {
+                out.write(content.getBytes(StandardCharsets.UTF_8));
             } catch (Exception e) {
                 ok = false;
             }
-            web.evaluateJavascript("window.backupSalvo && window.backupSalvo(" + ok + ")", null);
+            web.evaluateJavascript("window.onBackupSaved && window.onBackupSaved(" + ok + ")", null);
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int pedido, String[] permissoes, int[] resultados) {
-        super.onRequestPermissionsResult(pedido, permissoes, resultados);
-        if (pedido != PEDIDO_MIC || pedidoMic == null) return;
-        if (resultados.length > 0 && resultados[0] == PackageManager.PERMISSION_GRANTED) {
-            pedidoMic.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request != REQUEST_MIC || micRequest == null) return;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+            micRequest.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
         } else {
-            pedidoMic.deny();
+            micRequest.deny();
         }
-        pedidoMic = null;
+        micRequest = null;
     }
 
-    /** Botão voltar do celular: volta de tela dentro do app (do estudo para o início) antes de sair. */
+    /** Phone back button: goes back a screen inside the app (study → home) before leaving it. */
     @Override
     public void onBackPressed() {
         if (web.canGoBack()) web.goBack();
         else super.onBackPressed();
     }
 
-    /** O que o site consegue pedir ao Android. Só uma coisa: salvar o backup num arquivo. */
-    private class Ponte {
+    /** What the web app can ask Android for. Just one thing: saving the backup to a file. */
+    private class Bridge {
         @JavascriptInterface
-        public void salvarBackup(String nome, String conteudo) {
-            backupPendente = conteudo;
+        public void saveBackup(String name, String content) {
+            pendingBackup = content;
             final Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
             i.setType("application/json");
-            i.putExtra(Intent.EXTRA_TITLE, nome);
-            runOnUiThread(() -> startActivityForResult(i, PEDIDO_SALVAR));
+            i.putExtra(Intent.EXTRA_TITLE, name);
+            runOnUiThread(() -> startActivityForResult(i, REQUEST_SAVE));
         }
     }
 }
