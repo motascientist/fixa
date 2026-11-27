@@ -51,9 +51,11 @@ with sync_playwright() as p:
 
     # 2) Switch to English in Settings: everything changes at once, no reload
     pg.click("a[data-tab=settings]")
+    pg.wait_for_selector("#v-settings:not([hidden])")
     pg.select_option("#set-lang", "en")
     check("switching in Settings changes the screen", pg.inner_text("#v-settings h1") == "Settings" and pg.inner_text("a[data-tab=home]") == "Home")
     pg.click("a[data-tab=home]")
+    pg.wait_for_selector("#v-home:not([hidden])")
     check("…and the other screens", pg.inner_text("#start-all") == "Create deck")
 
     # 3) A US phone that picks Portuguese anyway

@@ -15,8 +15,8 @@ android {
         applicationId 'app.fixa'
         minSdk 27
         targetSdk 34
-        versionCode 5
-        versionName '0.2.0'
+        versionCode 6
+        versionName '0.3.0'
     }
 
     signingConfigs {
@@ -51,7 +51,7 @@ android {
 
 tasks.register('copyWebApp', Copy) {
     from(webApp) {
-        include 'index.html', 'style.css', 'i18n.js', 'app.js', 'fsrs.js', 'media.js', 'manifest.webmanifest', 'icons/**'
+        include 'index.html', 'style.css', 'i18n.js', 'app.js', 'fsrs.js', 'kana.js', 'media.js', 'manifest.webmanifest', 'icons/**'
     }
     into "$buildDir/webapp"
 }

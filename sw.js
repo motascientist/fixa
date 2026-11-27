@@ -1,9 +1,9 @@
 // Fixa service worker: keeps the app on the device so it opens offline.
 // Strategy: network first (a new version shows up right away), falling back to the cache when offline.
 // When publishing a change, bump CACHE_VERSION to clear the old cache.
-const CACHE_VERSION = 'fixa-v3';
+const CACHE_VERSION = 'fixa-v4';
 const FILES = [
-  './', './index.html', './style.css', './i18n.js', './app.js', './fsrs.js', './media.js', './manifest.webmanifest',
+  './', './index.html', './style.css', './i18n.js', './app.js', './fsrs.js', './kana.js', './media.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png',
 ];
 

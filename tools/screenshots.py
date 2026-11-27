@@ -25,12 +25,13 @@ def review(i, deck, front, back, due_in_days, stability):
 
 
 cards = [
-    {"id": "n1", "deckId": "jp", "front": "Watashi", "back": "I (neutral, polite)", "created": 100, "state": "new"},
+    {"id": "n1", "deckId": "jp", "front": "Watashi", "frontSub": "わたし", "back": "I (neutral, polite)", "created": 100, "state": "new"},
     {"id": "n2", "deckId": "jp", "front": "Arigatou", "back": "Thank you", "created": 101, "state": "new"},
     {"id": "n3", "deckId": "es", "front": "I'm short on time today", "back": "Hoy tengo poco tiempo", "created": 102, "state": "new"},
 ]
-for i, (f, b) in enumerate([("Taberu", "To eat"), ("Nomu", "To drink"), ("Iku", "To go"), ("Miru", "To see"), ("Kaku", "To write")]):
-    cards.append(review(i, "jp", f, b, [-1, -1, 1, 2, 4][i], 3))
+for i, (f, sub, b) in enumerate([("Taberu", "たべる", "To eat"), ("Nomu", "のむ", "To drink"), ("Iku", "いく", "To go"),
+                                 ("Miru", "みる", "To see"), ("Kaku", "かく", "To write")]):
+    cards.append({**review(i, "jp", f, b, [-1, -1, 1, 2, 4][i], 3), "frontSub": sub})
 for i, (f, b) in enumerate([("The invoice is overdue", "La factura está vencida"), ("I agree", "Estoy de acuerdo"),
                             ("Let's schedule a meeting", "Programemos una reunión"), ("It depends on the client", "Depende del cliente")]):
     cards.append(review(i, "es", f, b, [-1, 1, 3, 5][i], 4))
@@ -89,6 +90,14 @@ with sync_playwright() as p:
                 break
         pg.wait_for_timeout(380)
         pg.screenshot(path=str(OUT / "done.png"))
+        # free practice, from the end screen
+        pg.wait_for_timeout(1500)
+        pg.click("#done-practice")
+        pg.wait_for_selector("#v-study:not([hidden])")
+        pg.wait_for_timeout(400)
+        pg.click("#front")
+        pg.wait_for_timeout(700)
+        pg.screenshot(path=str(OUT / "practice.png"))
         ctx.close()
     browser.close()
 srv.shutdown()

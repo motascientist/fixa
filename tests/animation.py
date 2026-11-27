@@ -38,6 +38,8 @@ with sync_playwright() as p:
     pg.wait_for_selector("#v-study:not([hidden])")
     pg.wait_for_timeout(400)
 
+    first = pg.inner_text("#front")
+    second = ({"Watashi", "Arigatou"} - {first}).pop()  # cards come shuffled: the other one is next
     pg.click("#front")
     pg.wait_for_timeout(60)
     check("flip: the card is turning", pg.evaluate(RUNNING) > 0)
@@ -54,7 +56,7 @@ with sync_playwright() as p:
     check("Remembered: the card leaves animated", pg.evaluate(RUNNING) > 0)
     pg.screenshot(path=str(SHOTS / "anim-2-remembered.png"))
     pg.wait_for_timeout(500)
-    check("next card enters and is fully visible", pg.inner_text("#front") == "Arigatou"
+    check("next card enters and is fully visible", pg.inner_text("#front") == second
           and pg.evaluate("getComputedStyle(document.querySelector('#flash')).opacity") == "1")
 
     pg.click("#front")
@@ -64,7 +66,7 @@ with sync_playwright() as p:
     pg.wait_for_timeout(80)
     check("Forgot: '↺ 1 min' rises from the button", "↺ 1 min" in pg.locator(".float-label").all_inner_texts())
     pg.wait_for_timeout(500)
-    check("a key repeated mid-animation does not count", pg.evaluate("db.cards.find(c => c.id === 'c2').reps") == 1)
+    check("a key repeated mid-animation does not count", pg.evaluate(f"db.cards.find(c => c.front === '{second}').reps") == 1)
 
     pg.click("#front")
     pg.wait_for_timeout(600)

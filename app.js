@@ -11,6 +11,15 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+// Fisher–Yates. Cards never come in the order they were added: otherwise you learn the order, not the cards.
+function shuffle(list) {
+  const a = [...list];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 // Inside the APK there is window.FixaAndroid (see android/). In a browser there isn't.
 const IN_APK = !!window.FixaAndroid;
@@ -154,7 +163,7 @@ function streakDays() {
 
 /* ---------- Navigation ---------- */
 
-const VIEWS = ['home', 'study', 'add', 'cards', 'settings'];
+const VIEWS = ['home', 'study', 'practice', 'add', 'cards', 'settings'];
 function go(v) {
   if (location.hash !== '#' + v) location.hash = v;
   else route();
@@ -166,11 +175,12 @@ function route() {
   VIEWS.forEach(x => { $('#v-' + x).hidden = x !== v; });
   $$('.tabbar a').forEach(a => a.classList.toggle('on', a.dataset.tab === v));
   document.body.classList.toggle('studying', v === 'study');
+  document.body.classList.toggle('practicing', v === 'study' && !!session && session.mode === 'practice');
   if (v !== 'study') {
     session = null;
     releaseStudyMedia();
   }
-  ({ home: renderHome, add: renderAdd, cards: renderCards, settings: renderSettings, study: () => {} })[v]();
+  ({ home: renderHome, practice: renderPractice, add: renderAdd, cards: renderCards, settings: renderSettings, study: () => {} })[v]();
   window.scrollTo(0, 0);
 }
 addEventListener('hashchange', route);
@@ -228,10 +238,11 @@ function renderHome() {
     btn.disabled = false;
     btn.onclick = () => go('add');
   } else if (!n) {
+    // The schedule is done for today, but motivation is not: offer practice, which leaves the schedule alone.
     $('#today-sub').textContent = t('allCaughtUp') + '. ' + nextUpText();
-    btn.textContent = t('allCaughtUp');
-    btn.disabled = true;
-    btn.onclick = null;
+    btn.textContent = t('freePractice');
+    btn.disabled = false;
+    btn.onclick = () => startPractice(null);
   } else {
     const min = Math.max(1, Math.round((n * SECONDS_PER_CARD) / 60));
     $('#today-sub').textContent = [due && t('toReview', { n: due }), news && tn('newCards', news), t('aboutMinutes', { n: min })]
@@ -279,6 +290,24 @@ function renderForecast() {
     `<div class="fc ${i === 0 ? 'today' : ''}"><span class="n">${d.n}</span><span class="b" style="height:${Math.round((d.n / max) * 64)}px"></span><span>${d.label}</span></div>`
   ).join('');
 }
+
+/* ---------- Practice ---------- */
+
+function renderPractice() {
+  const withCards = db.decks.map(d => ({ d, n: db.cards.filter(c => c.deckId === d.id).length })).filter(x => x.n);
+  if (!withCards.length) {
+    $('#practice-list').innerHTML = `<li class="empty">${t('practiceNoCards')}</li>`;
+    return;
+  }
+  const row = (id, name, n) => `<li class="deck"><button class="row" data-practice="${id}">
+      <span><b>${esc(name)}</b><small>${tn('cards', n)}</small></span></button></li>`;
+  $('#practice-list').innerHTML = (withCards.length > 1 ? row('', t('practiceAllDecks'), db.cards.length) : '')
+    + withCards.map(x => row(x.d.id, x.d.name, x.n)).join('');
+}
+$('#practice-list').addEventListener('click', e => {
+  const b = e.target.closest('[data-practice]');
+  if (b) startPractice(b.dataset.practice || null);
+});
 
 $('#deck-list').addEventListener('click', e => {
   const edit = e.target.closest('[data-edit-deck]');
@@ -336,27 +365,54 @@ function startSession(deckId) {
   const now = Date.now();
   const today = dayIndex(now);
   const ids = deckId ? [deckId] : db.decks.map(d => d.id);
-  const due = db.cards.filter(c => ids.includes(c.deckId) && c.state !== 'new' && c.due <= now).sort((a, b) => a.due - b.due);
+  const due = db.cards.filter(c => ids.includes(c.deckId) && c.state !== 'new' && c.due <= now);
+  // Which new cards enter today follows the order they were added (so a deck is learned front to back),
+  // but the session itself is shuffled: neither reviews nor new cards come in a predictable order.
   const fresh = ids.flatMap(id => db.cards.filter(c => c.deckId === id && c.state === 'new')
     .sort((a, b) => a.created - b.created).slice(0, newAllowed(id, today)));
-  // mix: three reviews, one new card
-  const queue = [];
-  let i = 0, j = 0;
-  while (i < due.length || j < fresh.length) {
-    for (let k = 0; k < 3 && i < due.length; k++) queue.push(due[i++].id);
-    if (j < fresh.length) queue.push(fresh[j++].id);
-  }
+  const queue = shuffle([...due, ...fresh].map(c => c.id));
   if (!queue.length) return toast(t('nothingToReview'));
-  session = { queue, learning: [], done: 0, current: null, undo: null };
+  session = { mode: 'review', deckId, queue, learning: [], done: 0, current: null, undo: null };
+  openStudyScreen();
+}
+
+// Free practice: every card of the deck(s), shuffled, round after round, for as long as you want.
+// Nothing is saved: the schedule, the streak and the numbers on Home stay exactly as they were.
+function startPractice(deckId) {
+  const ids = db.cards.filter(c => !deckId || c.deckId === deckId).map(c => c.id);
+  if (!ids.length) return toast(t(deckId ? 'deckHasNoCards' : 'practiceNoCards'));
+  session = { mode: 'practice', deckId, queue: shuffle(ids), learning: [], done: 0, current: null, undo: null,
+    practiced: 0, roundSize: ids.length, roundDone: 0 };
+  openStudyScreen();
+}
+
+function openStudyScreen() {
   $('#undo').hidden = true;
   $('#done').hidden = true;
   $('#flash').hidden = false;
   $('#actions').hidden = false;
   go('study');
+  document.body.classList.toggle('practicing', session.mode === 'practice');
+  $('#keys').textContent = t(session.mode === 'practice' ? 'keysHintPractice' : 'keysHint');
   showCard(pickNext());
 }
 
+// Next practice round: reshuffle everything, without starting with the card that was just seen.
+function refillPractice(lastId) {
+  const ids = db.cards.filter(c => !session.deckId || c.deckId === session.deckId).map(c => c.id);
+  let next = shuffle(ids);
+  if (next.length > 1 && next[0] === lastId) next.push(next.shift());
+  session.queue = next;
+  session.roundSize = next.length;
+  session.roundDone = 0;
+}
+
 function pickNext() {
+  if (session.mode === 'practice') {
+    while (session.queue.length && !cardById(session.queue[0])) session.queue.shift();
+    if (!session.queue.length) refillPractice(null);
+    return cardById(session.queue[0]) || null;
+  }
   const now = Date.now();
   session.learning = session.learning.filter(id => cardById(id));
   const missed = session.learning.map(cardById).sort((a, b) => a.due - b.due);
@@ -459,7 +515,7 @@ function confetti() {
 }
 
 async function showCard(c) {
-  if (!c) return finishSession();
+  if (!c) return session && session.mode === 'practice' ? go('home') : finishSession();
   const token = ++showToken;
   releaseStudyMedia();
   session.current = c.id;
@@ -476,15 +532,25 @@ async function showCard(c) {
   $$('.play').forEach(b => { b.hidden = true; });
   $('#front').textContent = c.front;
   $('#back').textContent = c.back;
+  for (const f of FACES) { // the small line under each face (e.g. hiragana under romaji)
+    const sub = $(`#${f}-sub`);
+    sub.textContent = c[f + 'Sub'] || '';
+    sub.hidden = !c[f + 'Sub'];
+  }
   $('#front-img').hidden = true;
   $('#back-img').hidden = true;
   $('#answer').hidden = true;
   $('#reveal').hidden = false;
   $('#grade').hidden = true;
-  const remaining = session.queue.length + session.learning.length;
-  const total = session.done + remaining;
-  $('#progress').style.width = (total ? (session.done / total) * 100 : 0) + '%';
-  $('#left').textContent = tn('left', remaining);
+  if (session.mode === 'practice') {
+    $('#progress').style.width = (session.roundSize ? (session.roundDone / session.roundSize) * 100 : 0) + '%';
+    $('#left').textContent = tn('practiceCount', session.practiced);
+  } else {
+    const remaining = session.queue.length + session.learning.length;
+    const total = session.done + remaining;
+    $('#progress').style.width = (total ? (session.done / total) * 100 : 0) + '%';
+    $('#left').textContent = tn('left', remaining);
+  }
 
   for (const f of FACES) for (const k of KINDS) {
     const id = c.media && c.media[f] && c.media[f][k];
@@ -520,10 +586,15 @@ async function reveal() {
   $('#reveal').hidden = true;
   $('#grade').hidden = false;
   revealedAt = performance.now(); // the double-tap guard counts from when the buttons appear
-  session.intervals = { 3: plan(c, 3).ivl, 4: plan(c, 4).ivl };
-  $('#i1').textContent = t('oneMinute');
-  $('#i3').textContent = t('inDuration', { d: formatDays(session.intervals[3]) });
-  $('#i4').textContent = t('inDuration', { d: formatDays(session.intervals[4]) });
+  if (session.mode === 'practice') {
+    $('#i1').textContent = t('practiceAgain');
+    $('#i3').textContent = t('practiceLater');
+  } else {
+    session.intervals = { 3: plan(c, 3).ivl, 4: plan(c, 4).ivl };
+    $('#i1').textContent = t('oneMinute');
+    $('#i3').textContent = t('inDuration', { d: formatDays(session.intervals[3]) });
+    $('#i4').textContent = t('inDuration', { d: formatDays(session.intervals[4]) });
+  }
   animate($('#grade'), [
     { transform: 'translateY(10px)', opacity: 0 },
     { transform: 'none', opacity: 1 },
@@ -542,6 +613,7 @@ async function rate(r) {
   const c = cardById(session.current);
   if (!c) return showCard(pickNext());
   const btn = $(`#grade [data-r="${r}"]`);
+  if (session.mode === 'practice') return practiceRate(c, r, btn);
   const label = r === 1 ? '↺ ' + t('oneMinute') : '+' + formatDays(session.intervals[r]);
   session.undo = { card: JSON.parse(JSON.stringify(c)), queue: [...session.queue], learning: [...session.learning], done: session.done, day: dayIndex() };
   answer(c, r);
@@ -558,6 +630,25 @@ async function rate(r) {
   await leaving.finished;
   animating = false;
   showCard(pickNext());
+}
+
+// Practice answer: nothing is written to the card. Forgot puts it back a few cards ahead; Remembered sends it
+// to the end of the round. When the round ends, a new shuffled round begins.
+async function practiceRate(c, r, btn) {
+  if (r !== 1 && r !== 3) return;
+  session.practiced++;
+  session.queue = session.queue.filter(id => id !== c.id);
+  if (r === 1) session.queue.splice(Math.min(3, session.queue.length), 0, c.id);
+  else session.roundDone++;
+  if (!session.queue.length) refillPractice(c.id);
+
+  animating = true;
+  floatLabel(btn, r === 1 ? '↺' : '✓', r);
+  animate(btn, [{ transform: 'scale(1)' }, { transform: 'scale(1.07)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' });
+  leaving = animate($('#flash'), EXITS[r], { duration: r === 1 ? 300 : 240, easing: 'cubic-bezier(.4,0,.6,1)', fill: 'forwards' });
+  await leaving.finished;
+  animating = false;
+  if (session) showCard(pickNext());
 }
 
 function undoLast() {
@@ -608,6 +699,7 @@ $('#flash-edit').addEventListener('click', () => { const c = session && cardById
 $('#undo').addEventListener('click', undoLast);
 $('#quit').addEventListener('click', () => go('home'));
 $('#done-home').addEventListener('click', () => go('home'));
+$('#done-practice').addEventListener('click', () => startPractice(session ? session.deckId : null));
 $$('.play').forEach(b => b.addEventListener('click', () => play(b.dataset.face)));
 
 document.addEventListener('keydown', e => {
@@ -615,7 +707,7 @@ document.addEventListener('keydown', e => {
   if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); reveal(); }
   else if (e.key === '1') rate(1);
   else if (e.key === '2') rate(3);
-  else if (e.key === '3') rate(4);
+  else if (e.key === '3' && session.mode !== 'practice') rate(4);
   else if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) undoLast();
   else if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) { const c = cardById(session.current); if (c) openCardDialog(c); }
 });
@@ -641,7 +733,26 @@ function renderAdd() {
   setTimeout(() => $('#add-front').focus(), 50);
 }
 
-const buildCard = (deckId, front, back) => ({ id: uid(), deckId, front, back, created: Date.now(), state: 'new' });
+function buildCard(deckId, front, back, frontSub = '', backSub = '') {
+  const c = { id: uid(), deckId, front, back, created: Date.now(), state: 'new' };
+  if (frontSub) c.frontSub = frontSub;
+  if (backSub) c.backSub = backSub;
+  return c;
+}
+function setSubs(card, frontSub, backSub) {
+  if (frontSub) card.frontSub = frontSub; else delete card.frontSub;
+  if (backSub) card.backSub = backSub; else delete card.backSub;
+}
+
+// あ / ア buttons: fill the small line with the face's text converted to hiragana or katakana (editable afterwards).
+document.addEventListener('click', e => {
+  const b = e.target.closest('.kana[data-source]');
+  if (!b) return;
+  const source = $('#' + b.dataset.source);
+  const target = $('#' + b.dataset.source + '-sub');
+  target.value = toKana(source.value.trim(), b.dataset.kana === 'kata');
+  target.focus();
+});
 
 let saving = false;
 $('#add-form').addEventListener('submit', async e => {
@@ -654,7 +765,7 @@ $('#add-form').addEventListener('submit', async e => {
   const deckId = $('#add-deck').value;
   saving = true;
   try {
-    const c = buildCard(deckId, front, back);
+    const c = buildCard(deckId, front, back, $('#add-front-sub').value.trim(), $('#add-back-sub').value.trim());
     await commitDraft(c, addDraft); // media first: if it fails, no half-saved card is left behind
     db.cards.push(c);
     db.settings.lastDeck = deckId;
@@ -669,8 +780,7 @@ $('#add-form').addEventListener('submit', async e => {
   releaseDraft(addDraft);
   addDraft = newDraft();
   addPickers.forEach(p => p.render());
-  $('#add-front').value = '';
-  $('#add-back').value = '';
+  ['#add-front', '#add-back', '#add-front-sub', '#add-back-sub'].forEach(s => { $(s).value = ''; });
   $('#add-front').focus();
   toast(t('savedTo', { deck: deckById(deckId).name }));
 });
@@ -694,12 +804,10 @@ function parseMany(text) {
   let bad = 0;
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim() || line.startsWith('#')) continue; // header lines such as #separator:tab
-    let f, b;
-    if (line.includes('\t')) [f, b] = line.split('\t');
-    else if (line.includes('|')) { const p = line.split('|'); f = p[0]; b = p.slice(1).join('|'); }
-    f = f && cleanField(f);
-    b = b && cleanField(b);
-    if (f && b) ok.push({ front: f, back: b }); else bad++;
+    // columns: front, back, then optionally the small line under the front and under the back
+    const cols = line.includes('\t') ? line.split('\t') : line.includes('|') ? line.split('|') : [line];
+    const [f, b, fs, bs] = cols.map(x => (x ? cleanField(x) : ''));
+    if (f && b) ok.push({ front: f, back: b, frontSub: fs || '', backSub: bs || '' }); else bad++;
   }
   return { ok, bad };
 }
@@ -722,7 +830,7 @@ $('#bulk-add').addEventListener('click', () => {
     const k = c.front + '\u0000' + c.back;
     if (existing.has(k)) { dupes++; continue; }
     existing.add(k);
-    db.cards.push(buildCard(deckId, c.front, c.back));
+    db.cards.push(buildCard(deckId, c.front, c.back, c.frontSub, c.backSub));
     added++;
   }
   db.settings.lastDeck = deckId;
@@ -753,7 +861,7 @@ function listCards() {
   const deckId = $('#cards-deck').value;
   const q = $('#cards-q').value.trim().toLowerCase();
   const list = db.cards
-    .filter(c => (!deckId || c.deckId === deckId) && (!q || (c.front + ' ' + c.back).toLowerCase().includes(q)))
+    .filter(c => (!deckId || c.deckId === deckId) && (!q || [c.front, c.back, c.frontSub, c.backSub].join(' ').toLowerCase().includes(q)))
     .sort((a, b) => b.created - a.created);
   const LIMIT = 300;
   $('#cards-info').textContent = list.length > LIMIT ? t('showingRecent', { lim: LIMIT, n: list.length }) : tn('cards', list.length);
@@ -765,7 +873,7 @@ function listCards() {
         (m.front && m.front.img) || (m.back && m.back.img) ? t('imageTag') : '',
         (m.front && m.front.audio) || (m.back && m.back.audio) ? t('audioTag') : '',
       ].filter(Boolean).join(' + ');
-      return `<li><button class="card-item" data-card="${c.id}"><span class="front-line"><span>${esc(c.front || t('mediaOnly'))}</span><span class="tag ${cls}">${tag}</span></span><span class="back-line">${esc(c.back || t('mediaOnly'))}${extras ? ` · <span class="tag">${extras}</span>` : ''}</span></button></li>`;
+      return `<li><button class="card-item" data-card="${c.id}"><span class="front-line"><span>${esc(c.front || t('mediaOnly'))}${c.frontSub ? ` <small class="muted">${esc(c.frontSub)}</small>` : ''}</span><span class="tag ${cls}">${tag}</span></span><span class="back-line">${esc(c.back || t('mediaOnly'))}${extras ? ` · <span class="tag">${extras}</span>` : ''}</span></button></li>`;
     }).join('')
     : `<li class="empty">${db.cards.length ? t('nothingFound') : t('noCardsList')}</li>`;
 }
@@ -798,6 +906,8 @@ async function openCardDialog(c) {
   fillDeckSelect($('#card-deck'), c.deckId);
   $('#card-front').value = c.front;
   $('#card-back').value = c.back;
+  $('#card-front-sub').value = c.frontSub || '';
+  $('#card-back-sub').value = c.backSub || '';
   $('#card-meta').textContent = c.state === 'new'
     ? t('notStudied')
     : t('cardMeta', {
@@ -820,6 +930,7 @@ $('#card-form').addEventListener('submit', async e => {
   try { await commitDraft(c, editDraft); }
   catch (err) { return toast(t('mediaSaveFailed')); }
   Object.assign(c, { front, back, deckId: $('#card-deck').value });
+  setSubs(c, $('#card-front-sub').value.trim(), $('#card-back-sub').value.trim());
   save();
   $('#card-dialog').close();
   afterEdit();

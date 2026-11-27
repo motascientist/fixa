@@ -78,6 +78,7 @@ with sync_playwright() as p:
     pg.fill("#add-front", "I'm short on time today")
     pg.fill("#add-back", "Hoy tengo poco tiempo")
     pg.click("#add-form button[type=submit]")
+    pg.wait_for_function("db.cards.length === 1")  # saving is async: wait for it instead of racing it
     check("card saved and fields cleared", pg.input_value("#add-front") == "")
 
     # Paste many (tab + pipe)
@@ -85,7 +86,7 @@ with sync_playwright() as p:
     pg.fill("#bulk-text", CARDS)
     pg.screenshot(path=str(SHOTS / "2-add.png"))
     pg.click("#bulk-add")
-    pg.wait_for_timeout(100)
+    pg.wait_for_function("db.cards.length >= 6")
     total = pg.evaluate("db.cards.length")
     check(f"6 cards in total (got {total})", total == 6)
     check("reports the line without a back", "1 line without a back" in pg.inner_text("#toast"))
